@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SDDCS Tuner v0.22</title>
+<style>
+:root{
+  --bg:#10151b; --panel:#161d26; --panel2:#1b2430; --line:#2a3644;
+  --ink:#d7e0ea; --dim:#8496a8; --accent:#4fc3f7; --good:#6fdc8c; --bad:#ff7a7a;
+  --warn:#ffc766;
+  --mono:ui-monospace,'Cascadia Code','JetBrains Mono',Consolas,monospace;
+  --sans:system-ui,'Segoe UI',Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;min-height:100vh}
+header{display:flex;align-items:baseline;gap:14px;padding:14px 20px;border-bottom:1px solid var(--line)}
+header h1{font-family:var(--mono);font-size:20px;font-weight:600;letter-spacing:.5px}
+header .ver{color:var(--dim);font-family:var(--mono);font-size:12px}
+header .sub{color:var(--dim);font-size:12.5px;margin-left:auto}
+main{display:grid;grid-template-columns:340px 1fr;gap:14px;padding:14px 20px;max-width:1500px;margin:0 auto}
+@media(max-width:960px){main{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:14px}
+.panel h2{font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--dim);margin-bottom:10px}
+.row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.row label{flex:1;color:var(--ink);font-size:13px}
+.row input[type=text],.row input[type=number],.row select{
+  width:110px;background:var(--panel2);border:1px solid var(--line);border-radius:5px;
+  color:var(--ink);font-family:var(--mono);font-size:13px;padding:5px 7px}
+.row input.wide{width:180px}
+.row input:focus,.row select:focus{outline:1px solid var(--accent);border-color:var(--accent)}
+.row input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent)}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+button{background:var(--panel2);border:1px solid var(--line);border-radius:6px;color:var(--ink);
+  font-family:var(--mono);font-size:13px;padding:7px 13px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:#123448;border-color:var(--accent);color:var(--accent)}
+button:disabled{opacity:.4;cursor:default}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+canvas{width:100%;display:block;background:#0b0f14;border:1px solid var(--line);border-radius:8px}
+.plotwrap{margin-bottom:14px}
+.plotlabel{font-family:var(--mono);font-size:11px;color:var(--dim);margin:4px 2px}
+.legend{display:flex;gap:16px;font-family:var(--mono);font-size:11px;color:var(--dim);margin:6px 2px}
+.legend span::before{content:'\2014\2014';margin-right:5px}
+.leg-cur::before{color:#4fc3f7}
+.leg-best::before{color:#6fdc8c}
+.readout{display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:8px}
+.stat{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:7px 10px}
+.stat .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--dim)}
+.stat .v{font-family:var(--mono);font-size:16px;margin-top:2px}
+.stat .v.good{color:var(--good)} .stat .v.bad{color:var(--bad)} .stat .v.warn{color:var(--warn)}
+.gains{font-family:var(--mono);font-size:13px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:6px;padding:9px 11px;line-height:1.6;white-space:pre-wrap;word-break:break-all}
+.note{color:var(--dim);font-size:12px;line-height:1.5;margin-top:8px}
+.formula{font-family:var(--mono);font-size:12.5px;color:var(--accent);background:var(--panel2);
+  border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin-bottom:10px;text-align:center}
+#status{font-family:var(--mono);font-size:12px;color:var(--dim);margin-top:8px;min-height:16px}
+progress{width:100%;height:6px;accent-color:var(--accent);margin-top:6px}
+</style>
+</head>
+<body>
+<header>
+  <h1>SDDCS Tuner</h1><span class="ver">v0.22</span>
+  <span class="sub">a recurrent linear unit trained by pathwise gradient through the exact discrete closed loop</span>
+</header>
+<main>
+<div>
+  <div class="panel">
+    <h2>Plant G(s)&#183;e&#8315;&#7623;&#738;</h2>
+    <div class="row"><label for="pnum">Numerator (space-separated)</label><input class="wide" type="text" id="pnum" value="1"></div>
+    <div class="row"><label for="pden">Denominator (space-separated)</label><input class="wide" type="text" id="pden" value="2 1"></div>
+    <div class="row"><label for="pdel">Dead time L</label><input type="number" id="pdel" value="1" step="0.1" min="0"></div>
+    <div class="note">Descending powers of s, strictly proper. Default: FOTD, T/L = 2, the certified benchmark (PI optimum Ts = 4.86L, order-2 wall 3.2L).</div>
+  </div>
+
+  <div class="panel">
+    <h2>Controller network</h2>
+    <div class="formula">u&#8342; = &Sigma;d&#7522;u&#8342;&#8331;&#7522; + &Sigma;w&#11388;e&#8342;&#8331;&#11388;</div>
+    <div class="row"><label for="order">Order</label><select id="order"><option value="1">1 (contains PI)</option><option value="2" selected>2 (contains filtered PID)</option><option value="3">3 (adds Kdd + third pole)</option></select></div>
+    <div class="note">Structure is not imposed: poles and zeros are free; integrator, derivative action, and filter emerge from training if the objective demands them.</div>
+  </div>
+
+  <div class="panel">
+    <h2>Specification</h2>
+    <div class="row"><label for="specCase">Specification</label>
+      <select id="specCase">
+        <option value="A" selected>A: monotone, min Ts</option>
+        <option value="B">B: min Ts, PO cap</option>
+        <option value="C">C: MIGO, max ki, Ms cap</option>
+        <option value="D">D: min Ts, PM target</option>
+      </select></div>
+    <div class="row" id="rowPO" style="display:none"><label for="pomax">Max overshoot (%)</label><input type="number" id="pomax" value="5" step="1"></div>
+    <div class="row" id="rowMs" style="display:none"><label for="msmax">Ms cap (combined M circle)</label><input type="number" id="msmax" value="1.4" step="0.05"></div>
+    <div class="row" id="rowPm" style="display:none"><label for="pmtgt">Phase margin target [deg]</label><input type="number" id="pmtgt" value="60" step="5"></div>
+    <div class="row"><label for="band">Settling band (&plusmn;)</label><input type="number" id="band" value="0.02" step="0.005"></div>
+    <div class="row"><label for="Th">Horizon (time units)</label><input type="number" id="Th" value="40" step="5"></div>
+    <div class="row"><label for="dt">&Delta;t</label><input type="number" id="dt" value="0.025" step="0.005"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Training</h2>
+    <div class="row"><label for="restarts">Random restarts</label><input type="number" id="restarts" value="16" step="1" min="1"></div>
+    <div class="row"><label for="iters">Adam steps per restart</label><input type="number" id="iters" value="4000" step="500"></div>
+    <div class="row"><label for="lr">Learning rate (cosine decay)</label><input type="number" id="lr" value="0.003" step="0.001"></div>
+    <div class="row"><label for="integ">Integrator start (z&#8321; = 1)</label><input type="checkbox" id="integ" checked></div>
+    <div class="note">Loss: smoothed settling + &lambda;&#183;TV&#8320; continuation (300 &rarr; 3000 &rarr; 30000) + tail term + bound term; overshoot hinge when monotonicity is off. Gradients are exact (forward sensitivities), clipped at 1. Integrator start places only the spec-mandated pole; gains and z&#8322; stay random (uncheck for the fully random ablation).</div>
+    <div class="btns">
+      <button class="primary" id="btnRun">Train</button>
+      <button id="btnStop" disabled>Stop</button>
+      <button id="btnReset">Reset</button>
+    </div>
+    <progress id="prog" value="0" max="1" style="display:none"></progress>
+    <div id="status"></div>
+  </div>
+</div>
+
+<div>
+  <div class="plotwrap">
+    <canvas id="cStep" height="340"></canvas>
+    <div class="legend"><span class="leg-best">best feasible y(t)</span></div>
+  </div>
+  <div class="panel">
+    <h2>Readout</h2>
+    <div class="readout">
+      <div class="stat"><div class="k">Restart</div><div class="v" id="rRun">-</div></div>
+      <div class="stat"><div class="k">Feasible runs</div><div class="v" id="rFeasN">0</div></div>
+      <div class="stat"><div class="k" id="rBestLbl">Best feasible Ts</div><div class="v good" id="rBestTs">-</div></div>
+    </div>
+    <div style="margin-top:10px" class="gains" id="rGains">best feasible controller: none yet</div>
+    <h2 style="margin-top:14px">Evaluate external gains</h2>
+    <div class="row"><label for="evMode">Interpretation</label>
+      <select id="evMode">
+        <option value="pidf" selected>continuous PIDF: Kp Ki Kd N (or Kp Ki for PI)</option>
+        <option value="vel">velocity th: Kp Ki [Kd [Kdd]] z1c z2 [z3]</option>
+      </select></div>
+    <div class="row"><label for="evGains">Gains (space-separated)</label><input class="wide" type="text" id="evGains" value=""></div>
+    <div class="btns"><button id="btnEval">Evaluate</button></div>
+    <div style="margin-top:10px" class="gains" id="evOut">paste pidtune or paper gains, then Evaluate; same instrument as training (ZOH, current &Delta;t, band, load IAE)</div>
+    <div class="btns" style="margin-top:8px"><button id="btnCopy" disabled>Copy result</button></div>
+  </div>
+</div>
+</main>
+
+<script id="engineSrc">
+'use strict';
+/* ================= engine (validated in node against the TIMC paper) ================= */
+function zeros(r,c){const M=[];for(let i=0;i<r;i++)M.push(new Float64Array(c));return M;}
+function matmul(A,B){const r=A.length,n=B.length,c=B[0].length,R=zeros(r,c);
+  for(let i=0;i<r;i++)for(let k=0;k<n;k++){const a=A[i][k];if(a===0)continue;
+    for(let j=0;j<c;j++)R[i][j]+=a*B[k][j];}return R;}
+function matadd(A,B){const R=zeros(A.length,A[0].length);
+  for(let i=0;i<A.length;i++)for(let j=0;j<A[0].length;j++)R[i][j]=A[i][j]+B[i][j];return R;}
+function eye(n){const M=zeros(n,n);for(let i=0;i<n;i++)M[i][i]=1;return M;}
+function expm(A){const n=A.length;let nrm=0;
+  for(let i=0;i<n;i++){let s=0;for(let j=0;j<n;j++)s+=Math.abs(A[i][j]);nrm=Math.max(nrm,s);}
+  let sq=0;while(nrm>0.5){nrm/=2;sq++;}
+  const As=zeros(n,n);
+  for(let i=0;i<n;i++)for(let j=0;j<n;j++)As[i][j]=A[i][j]/Math.pow(2,sq);
+  let R=eye(n),T=eye(n);
+  for(let k=1;k<=14;k++){T=matmul(T,As);
+    for(let i=0;i<n;i++)for(let j=0;j<n;j++)T[i][j]/=k;R=matadd(R,T);}
+  for(let s=0;s<sq;s++)R=matmul(R,R);
+  return R;}
+function plantFromTF(num,den,L,dt){
+  const n=den.length-1;
+  if(n<1||num.length>=den.length)return null;
+  const d0=den[0];if(d0===0)return null;
+  const dd=den.map(c=>c/d0);
+  const bb=new Array(n).fill(0);
+  const off=n-num.length;
+  for(let i=0;i<num.length;i++)bb[off+i]=num[i]/d0;
+  const A=zeros(n,n);
+  for(let i=0;i<n-1;i++)A[i][i+1]=1;
+  for(let j=0;j<n;j++)A[n-1][j]=-dd[n-j];
+  const B=new Float64Array(n);B[n-1]=1;
+  const C=new Float64Array(n);
+  for(let j=0;j<n;j++)C[j]=bb[n-1-j];
+  const Aug=zeros(n+1,n+1);
+  for(let i=0;i<n;i++){for(let j=0;j<n;j++)Aug[i][j]=A[i][j]*dt;Aug[i][n]=B[i]*dt;}
+  const E=expm(Aug);
+  const Ad=zeros(n,n),Bd=new Float64Array(n);
+  for(let i=0;i<n;i++){for(let j=0;j<n;j++)Ad[i][j]=E[i][j];Bd[i]=E[i][n];}
+  const delay=Math.max(0,Math.round((L||0)/dt));
+  return {Ad,Bd,C,n,delay,dt};
+}
+function ctrlCoeffs(th,order,dt){
+  if(order===1){const[Kp,Ki,z1c]=th;const z1=1+z1c/100;
+    return{w0:Ki*dt+Kp,w1:-Kp,w2:0,w3:0,d1:z1,d2:0,d3:0,z1,z2:0,z3:0};}
+  if(order===2){const[Kp,Ki,Kd,z1c,z2]=th;const z1=1+z1c/100;
+    return{w0:Ki*dt+Kp+Kd/dt,w1:-Kp-2*Kd/dt,w2:Kd/dt,w3:0,d1:z1+z2,d2:-z1*z2,d3:0,z1,z2,z3:0};}
+  const[Kp,Ki,Kd,Kdd,z1c,z2,z3]=th;const z1=1+z1c/100;
+  const A=Kd/dt,B=Kdd/(dt*dt);
+  return{w0:Ki*dt+Kp+A+B,w1:-Kp-2*A-3*B,w2:A+3*B,w3:-B,
+    d1:z1+z2+z3,d2:-(z1*z2+z1*z3+z2*z3),d3:z1*z2*z3,z1,z2,z3};
+}
+function rollout(th,order,plant,opt){
+  const{Ad,Bd,C,n,delay,dt}=plant;
+  const N=opt.N,P=th.length;
+  const co=ctrlCoeffs(th,order,dt);
+  const{w0,w1,w2,w3,d1,d2,d3,z1,z2,z3}=co;
+  const y=new Float64Array(N+1),u=new Float64Array(N+1),e=new Float64Array(N+1);
+  const x=new Float64Array(n);
+  const Sx=[];for(let p=0;p<P;p++)Sx.push(new Float64Array(n));
+  const Sy=opt.grad?zeros(P,N+1):null;
+  const Su=opt.grad?zeros(P,N+1):null;
+  const dbl=Math.max(1,delay); // read = u_{k-delay}
+  const ubuf=new Float64Array(dbl);
+  const Subuf=[];for(let p=0;p<P;p++)Subuf.push(new Float64Array(dbl));
+  let ptr=0,diverged=-1;
+  for(let k=0;k<=N;k++){
+    let yk=0;for(let j=0;j<n;j++)yk+=C[j]*x[j];
+    y[k]=yk;e[k]=1-yk;
+    if(!isFinite(yk)||Math.abs(yk)>50){diverged=k;break;}
+    const em1=k>=1?e[k-1]:0,em2=k>=2?e[k-2]:0,em3=k>=3?e[k-3]:0;
+    const um1=k>=1?u[k-1]:0,um2=k>=2?u[k-2]:0,um3=k>=3?u[k-3]:0;
+    const uk=d1*um1+d2*um2+d3*um3+w0*e[k]+w1*em1+w2*em2+w3*em3;
+    u[k]=uk;
+    if(opt.grad){
+      for(let p=0;p<P;p++){
+        let syk=0;for(let j=0;j<n;j++)syk+=C[j]*Sx[p][j];
+        Sy[p][k]=syk;
+        const sek=-syk,sem1=k>=1?-Sy[p][k-1]:0,sem2=k>=2?-Sy[p][k-2]:0,sem3=k>=3?-Sy[p][k-3]:0;
+        const sum1=k>=1?Su[p][k-1]:0,sum2=k>=2?Su[p][k-2]:0,sum3=k>=3?Su[p][k-3]:0;
+        let ex=0;
+        if(order===1){
+          if(p===0)ex=e[k]-em1;
+          else if(p===1)ex=dt*e[k];
+          else ex=um1/100;
+        }else if(order===2){
+          if(p===0)ex=e[k]-em1;
+          else if(p===1)ex=dt*e[k];
+          else if(p===2)ex=(e[k]-2*em1+em2)/dt;
+          else if(p===3)ex=(um1-z2*um2)/100;
+          else ex=um1-z1*um2;
+        }else{
+          if(p===0)ex=e[k]-em1;
+          else if(p===1)ex=dt*e[k];
+          else if(p===2)ex=(e[k]-2*em1+em2)/dt;
+          else if(p===3)ex=(e[k]-3*em1+3*em2-em3)/(dt*dt);
+          else if(p===4)ex=(um1-(z2+z3)*um2+z2*z3*um3)/100;
+          else if(p===5)ex=um1-(z1+z3)*um2+z1*z3*um3;
+          else ex=um1-(z1+z2)*um2+z1*z2*um3;
+        }
+        Su[p][k]=ex+d1*sum1+d2*sum2+d3*sum3+w0*sek+w1*sem1+w2*sem2+w3*sem3;
+      }
+    }
+    const ud=delay===0?uk:ubuf[ptr];
+    if(delay>0)ubuf[ptr]=uk;
+    const xn=new Float64Array(n);
+    for(let i=0;i<n;i++){let s=0;for(let j=0;j<n;j++)s+=Ad[i][j]*x[j];xn[i]=s+Bd[i]*ud;}
+    if(opt.grad){
+      for(let p=0;p<P;p++){
+        const sud=delay===0?Su[p][k]:Subuf[p][ptr];
+        if(delay>0)Subuf[p][ptr]=Su[p][k];
+        const sxn=new Float64Array(n);
+        for(let i=0;i<n;i++){let s=0;for(let j=0;j<n;j++)s+=Ad[i][j]*Sx[p][j];sxn[i]=s+Bd[i]*sud;}
+        Sx[p]=sxn;
+      }
+    }
+    for(let i=0;i<n;i++)x[i]=xn[i];
+    if(delay>0)ptr=(ptr+1)%dbl;
+  }
+  return{y,u,e,Sy,Su,N,dt,diverged};
+}
+function lossAndGrad(ro,cfg){
+  const{y,N,dt,Sy,diverged}=ro;
+  const P=Sy?Sy.length:0;
+  const g=new Float64Array(P);
+  if(diverged>=0){
+    let J=1e4*(1+(N-diverged)/N);
+    for(let k=0;k<diverged;k++){
+      const ab=Math.abs(y[k]);
+      if(ab>3){J+=cfg.cb*(ab-3);
+        if(Sy){const s=Math.sign(y[k])*cfg.cb;
+          for(let p=0;p<P;p++)g[p]+=s*Sy[p][k];}}
+    }
+    return{J,g,diverged:true};
+  }
+  const band=cfg.band,eps=cfg.eps;
+  let J=0;
+  const tail0=Math.floor(0.75*N);
+  for(let k=0;k<=N;k++){
+    const a=(Math.abs(1-y[k])-band)/eps;
+    const sg=1/(1+Math.exp(-a));
+    J+=dt*sg;
+    let dJdy=dt*sg*(1-sg)/eps*Math.sign(y[k]-1);
+    if(k>=tail0){
+      J+=cfg.css*(1-y[k])*(1-y[k])/(N-tail0+1);
+      dJdy+=cfg.css*2*(y[k]-1)/(N-tail0+1);
+    }
+    const ab=Math.abs(y[k]);
+    if(ab>3){J+=cfg.cb*(ab-3);dJdy+=cfg.cb*Math.sign(y[k]);}
+    if(!cfg.mono&&cfg.POmax>=0){
+      const ex=y[k]-1-cfg.POmax;
+      if(ex>0){J+=cfg.lamPO*ex*ex;dJdy+=cfg.lamPO*2*ex;}
+    }
+    if(Sy)for(let p=0;p<P;p++)g[p]+=dJdy*Sy[p][k];
+  }
+  if(cfg.mono){
+    for(let k=0;k<N;k++){
+      const dlt=y[k]-y[k+1];
+      if(dlt>0){J+=cfg.lam*dlt;
+        if(Sy)for(let p=0;p<P;p++)g[p]+=cfg.lam*(Sy[p][k]-Sy[p][k+1]);}
+    }
+  }
+  return{J,g,diverged:false};
+}
+function hardMetrics(ro,cfg){
+  const{y,N,dt,diverged}=ro;
+  if(diverged>=0)return{diverged:true,feasible:false,PO:NaN,Ts:NaN,TV0:NaN,TVu:NaN,settled:false};
+  let ymax=-Infinity;for(let k=0;k<=N;k++)if(y[k]>ymax)ymax=y[k];
+  const PO=ymax-1;
+  let lastOut=-1;for(let k=0;k<=N;k++)if(Math.abs(y[k]-1)>cfg.band)lastOut=k;
+  const settled=lastOut<N;
+  const Ts=lastOut<0?0:(settled?(lastOut+1)*dt:N*dt);
+  let TV0=0;for(let k=0;k<N;k++){const d=y[k]-y[k+1];if(d>0)TV0+=d;}
+  let TVu=0;for(let k=0;k<N;k++)TVu+=Math.abs(ro.u[k+1]-ro.u[k]);
+  const feasible=settled&&(cfg.mono?(TV0<=cfg.tolTV&&PO<=cfg.tolTV):PO<=cfg.POmax+1e-6);
+  return{diverged:false,PO,Ts,TV0,TVu,settled,feasible};
+}
+</script>
+<script id="workerDriver" type="text/plain">
+/* ---- worker driver ---- */
+let W={running:false};
+function wrng(){W.seed=(W.seed*1103515245+12345)%2147483648;return W.seed/2147483648;}
+function wNewRestart(){
+  if(W.run>0){if(W.curRunFeas)W.feasCount++;W.curRunFeas=false;}
+  const z1c0=W.tcfg.integ?0:(-6+10*wrng());
+  W.th=W.order===1
+    ?[0.05+1.5*wrng(),0.05+0.8*wrng(),z1c0]
+    :W.order===2
+    ?[0.05+1.5*wrng(),0.05+0.8*wrng(),0.1*(wrng()-0.5),z1c0,-0.6+1.2*wrng()]
+    :[0.05+1.5*wrng(),0.05+0.8*wrng(),0.1*(wrng()-0.5),0,z1c0,-0.6+1.2*wrng(),-0.6+1.2*wrng()];
+  W.m=new Float64Array(W.th.length);
+  W.v=new Float64Array(W.th.length);
+  W.it=0;W.run++;
+}
+function wLossCfg(it){
+  const st=W.tcfg.lamStages,per=Math.ceil(W.tcfg.iters/st.length);
+  const lam=st[Math.min(st.length-1,Math.floor((it-1)/per))];
+  return{band:W.spec.band,eps:W.tcfg.eps,css:W.tcfg.css,cb:W.tcfg.cb,
+    mono:W.spec.mono,POmax:W.spec.POmax,lamPO:W.tcfg.lamPO,lam,tolTV:W.spec.tolTV};
+}
+function wBuildFreq(){
+  W.fw=[];
+  const top=Math.log10(Math.PI/W.dt)-0.01;
+  for(let lw=-2.2;lw<=top;lw+=0.01){
+    const w=Math.pow(10,lw);
+    let nr=0,ni=0;for(const cc of W.num){const tr=-ni*w,ti=nr*w;nr=tr+cc;ni=ti;}
+    let dr=0,di=0;for(const cc of W.den){const tr=-di*w,ti=dr*w;dr=tr+cc;di=ti;}
+    const dd=dr*dr+di*di;
+    let Pr=(nr*dr+ni*di)/dd,Pi=(ni*dr-nr*di)/dd;
+    const ph=-w*W.L,cph=Math.cos(ph),sph=Math.sin(ph);
+    W.fw.push({w,Pr:Pr*cph-Pi*sph,Pi:Pr*sph+Pi*cph});
+  }
+  const M=W.spec.Ms||1.4;
+  W.mc=(2*M*M-2*M+1)/(2*M*(M-1));
+  W.mr=(2*M-1)/(2*M*(M-1));
+  W.pmr=(W.spec.PM||60)*Math.PI/180;
+}
+function wLoop(co,f){
+  const t2=f.w*W.dt,zr=Math.cos(t2),zi=Math.sin(t2);
+  const z2r=zr*zr-zi*zi,z2i=2*zr*zi,z3r=z2r*zr-z2i*zi,z3i=z2r*zi+z2i*zr;
+  const n=[co.w0*z3r+co.w1*z2r+(co.w2||0)*zr+(co.w3||0),co.w0*z3i+co.w1*z2i+(co.w2||0)*zi];
+  const d=[z3r-co.d1*z2r-(co.d2||0)*zr-(co.d3||0),z3i-co.d1*z2i-(co.d2||0)*zi];
+  const dd=d[0]*d[0]+d[1]*d[1];
+  const Cr=(n[0]*d[0]+n[1]*d[1])/dd,Ci=(n[1]*d[0]-n[0]*d[1])/dd;
+  return [Cr*f.Pr-Ci*f.Pi,Cr*f.Pi+Ci*f.Pr];
+}
+function wKic(th,order){
+  if(order===1)return th[1];
+  if(order===2)return th[1]/(1-th[4]);
+  return th[1]/((1-th[5])*(1-th[6]));
+}
+function wCircPen(th,order){
+  const co=ctrlCoeffs(th,order,W.dt);
+  let pen=0;
+  for(const f of W.fw){
+    const L=wLoop(co,f);
+    const v=W.mr-Math.hypot(L[0]+W.mc,L[1]);
+    if(v>0)pen+=v*v;
+  }
+  return pen;
+}
+function wPmPen(th,order){
+  const co=ctrlCoeffs(th,order,W.dt);
+  let pen=0;
+  for(const f of W.fw){
+    const L=wLoop(co,f);
+    const mag=Math.hypot(L[0],L[1]);
+    if(mag<0.9)continue;
+    const sw=Math.min(1,(mag-0.9)/0.1);
+    const marg=Math.PI+Math.atan2(L[1],L[0]);
+    const v=W.pmr-marg;
+    if(v>0)pen+=sw*v*v;
+  }
+  return pen;
+}
+function wFreqMet(th,order){
+  const co=ctrlCoeffs(th,order,W.dt);
+  let Ms=0,Mt=0,PM=180;
+  for(const f of W.fw){
+    const L=wLoop(co,f);
+    const S1=1/Math.hypot(1+L[0],L[1]);
+    Ms=Math.max(Ms,S1);
+    const mag=Math.hypot(L[0],L[1]);
+    Mt=Math.max(Mt,mag*S1);
+    if(mag>=1)PM=Math.min(PM,(Math.PI+Math.atan2(L[1],L[0]))*180/Math.PI);
+  }
+  return {Ms,Mt,PM};
+}
+function wJC(th){ // case C total objective (minimize)
+  return -wKic(th,W.order)+300*wCircPen(th,W.order);
+}
+function wFD(fn,th){
+  const g=new Float64Array(th.length);
+  for(let p=0;p<th.length;p++){
+    const h=1e-5*Math.max(1,Math.abs(th[p]));
+    const tp=th.slice();tp[p]+=h;const tm=th.slice();tm[p]-=h;
+    g[p]=(fn(tp)-fn(tm))/(2*h);
+  }
+  return g;
+}
+function wCaseHm(th){
+  const cs=W.spec.case||'A';
+  const cfgT={band:W.spec.band,mono:cs==='A',
+    POmax:cs==='B'?W.spec.POmax:1e9,tolTV:W.spec.tolTV};
+  const ro=rollout(th,W.order,W.plant,{N:W.tcfg.N,grad:false});
+  const hm=hardMetrics(ro,cfgT);
+  const fm=wFreqMet(th,W.order);
+  hm.Ms=fm.Ms;hm.Mt=fm.Mt;hm.PM=fm.PM;hm.kic=wKic(th,W.order);
+  const settled=hm.Ts<(W.tcfg.N-2)*W.dt;
+  if(cs==='A'||cs==='B')hm.caseFeasible=hm.feasible;
+  else if(cs==='C')hm.caseFeasible=settled&&fm.Ms<=(W.spec.Ms||1.4)+1e-6;
+  else hm.caseFeasible=settled&&fm.PM>=(W.spec.PM||60)-1e-6;
+  hm.obj=cs==='C'?-hm.kic:hm.Ts;
+  return hm;
+}
+
+function wIter(){
+  W.it++;
+  const cs=W.spec.case||'A';
+  let g,hm;
+  if(cs==='C'){
+    g=wFD(wJC,W.th);
+    const zi=W.order===1?2:W.order===2?3:4;
+    g[zi]=0;W.th[zi]=0; // spec-mandated integrator: pole frozen at 1
+    hm=(W.it%3===1||W.it>=W.tcfg.iters)?wCaseHm(W.th):null;
+  }else if(cs==='D'){
+    const cfg=wLossCfg(W.it);
+    cfg.mono=false;cfg.POmax=-1;cfg.lamPO=0;
+    const ro=rollout(W.th,W.order,W.plant,{N:W.tcfg.N,grad:true});
+    g=lossAndGrad(ro,cfg).g;
+    const gp=wFD(th2=>100*wPmPen(th2,W.order),W.th);
+    for(let p=0;p<g.length;p++)g[p]+=gp[p];
+    hm=wCaseHm(W.th);
+  }else{
+    const cfg=wLossCfg(W.it);
+    const ro=rollout(W.th,W.order,W.plant,{N:W.tcfg.N,grad:true});
+    g=lossAndGrad(ro,cfg).g;
+    hm=wCaseHm(W.th);
+  }
+  if(hm&&hm.caseFeasible){
+    W.curRunFeas=true;
+    if(!W.best||hm.obj<W.best.obj)
+      W.best={obj:hm.obj,Ts:hm.Ts,th:Array.from(W.th),met:hm,order:W.order,dt:W.plant.dt};
+  }
+  const lr=W.tcfg.lr*0.5*(1+Math.cos(Math.PI*W.it/W.tcfg.iters));
+  for(let p=0;p<W.th.length;p++){
+    let gp=g[p];if(gp>1)gp=1;else if(gp<-1)gp=-1;
+    W.m[p]=0.9*W.m[p]+0.1*gp;
+    W.v[p]=0.999*W.v[p]+0.001*gp*gp;
+    const mh=W.m[p]/(1-Math.pow(0.9,W.it)),vh=W.v[p]/(1-Math.pow(0.999,W.it));
+    W.th[p]-=lr*mh/(Math.sqrt(vh)+1e-8);
+  }
+}
+
+function wPost(type){
+  postMessage({type,run:W.run,it:W.it,feasCount:W.feasCount,curRunFeas:W.curRunFeas,best:W.best});
+}
+function wChunk(){
+  if(!W.running)return;
+  const t0=Date.now();
+  while(Date.now()-t0<200){
+    wIter();
+    if(W.it>=W.tcfg.iters){
+      if(W.run>=W.tcfg.restarts){
+        if(W.curRunFeas)W.feasCount++;
+        W.running=false;wPost('done');return;
+      }
+      wNewRestart();
+      break;
+    }
+  }
+  wPost('progress');
+  setTimeout(wChunk,0);
+}
+self.onmessage=e=>{
+  const m=e.data;
+  if(m.cmd==='start'){
+    const c=m.cfg;
+    W={running:true,seed:c.seed,order:c.order,spec:c.spec,tcfg:c.tcfg,
+       run:0,it:0,feasCount:0,curRunFeas:false,best:null,
+       num:c.num,den:c.den,L:c.L,dt:c.dt,
+       plant:plantFromTF(c.num,c.den,c.L,c.dt)};
+    wBuildFreq();
+    wNewRestart();
+    wChunk();
+  }else if(m.cmd==='stop'){
+    W.running=false;
+  }
+};
+</script>
+<script>
+'use strict';
+/* ================= main thread: UI + drawing; training lives in a Web Worker
+   so it keeps running when the tab is in the background ================= */
+const S={running:false,plant:null,order:2,spec:null,tcfg:null,
+  run:0,it:0,feasCount:0,curRunFeas:false,
+  bestFeas:{Ts:Infinity,th:null,met:null},roB:null,worker:null};
+function val(id){return document.getElementById(id).value;}
+function setStatus(m,bad){const el=document.getElementById('status');
+  el.textContent=m;el.style.color=bad?'var(--bad)':'var(--dim)';}
+function parseCoeffs(s){const a=s.split(/[,\s]+/).map(Number).filter(x=>!isNaN(x));
+  return a.length?a:null;}
+function readAll(){
+  const num=parseCoeffs(val('pnum')),den=parseCoeffs(val('pden'));
+  if(!num||!den){setStatus('Plant coefficients unreadable.',true);return null;}
+  const dt=+val('dt'),Th=+val('Th'),L=+val('pdel');
+  if(!(dt>0&&Th>dt)){setStatus('Check \u0394t and horizon.',true);return null;}
+  const denC=den[den.length-1];
+  let Kdc=1;
+  if(denC!==0){
+    Kdc=num[num.length-1]/denC;
+    if(!isFinite(Kdc)||Kdc===0){setStatus('Plant DC gain unusable.',true);return null;}
+  } // integrating plants (den const 0): no amplitude normalization
+  S.Kdc=Kdc;
+  const numN=num.map(c=>c/Kdc);
+  const plant=plantFromTF(numN,den,L,dt);
+  if(!plant){setStatus('Plant must be strictly proper (deg num < deg den).',true);return null;}
+  S.plant=plant;
+  S.numN=numN;S.den=den;S.L=L;
+  S.order=+val('order');
+  const cs=val('specCase');
+  S.spec={case:cs,band:+val('band'),mono:cs==='A',
+    POmax:cs==='B'?(+val('pomax'))/100:-1,
+    Ms:+val('msmax'),PM:+val('pmtgt'),tolTV:1e-9};
+  S.dtv=dt;
+  S.tcfg={iters:Math.max(100,Math.round(+val('iters'))),lr:+val('lr'),
+    N:Math.round(Th/dt),restarts:Math.max(1,Math.round(+val('restarts'))),
+    lamStages:[300,3000,30000],eps:0.005,css:1,cb:1,lamPO:1e3,
+    integ:document.getElementById('integ').checked};
+  return {num:numN,den,L,dt};
+}
+let workerURL=null;
+function makeWorker(){
+  if(!workerURL){
+    const engineSrc=document.getElementById('engineSrc').textContent;
+    const driverSrc=document.getElementById('workerDriver').textContent;
+    workerURL=URL.createObjectURL(new Blob([engineSrc+'\n'+driverSrc],{type:'text/javascript'}));
+  }
+  return new Worker(workerURL);
+}
+function startTraining(){
+  if(S.running)return;
+  const pc=readAll();if(!pc)return;
+  S.running=true;S.run=0;S.it=0;S.feasCount=0;S.curRunFeas=false;
+  S.bestFeas={obj:Infinity,Ts:Infinity,th:null,met:null};S.roB=null;
+  if(S.worker)S.worker.terminate();
+  S.worker=makeWorker();
+  S.worker.onmessage=e=>{
+    const m=e.data;
+    S.run=m.run;S.it=m.it;S.feasCount=m.feasCount;S.curRunFeas=m.curRunFeas;
+    if(m.best&&m.best.obj<S.bestFeas.obj){S.bestFeas=m.best;S.roB=null;}
+    if(m.type==='done'){
+      S.running=false;
+      document.getElementById('btnRun').disabled=false;
+      document.getElementById('btnStop').disabled=true;
+      setStatus(S.bestFeas.th
+        ?'Done. Best feasible '+objTxt(S.bestFeas)+' ('+S.feasCount+' feasible runs).'
+        :'Done. No feasible run; add restarts, lengthen the horizon, or relax the spec.');
+    }else{
+      setStatus('Training restart '+S.run+'/'+S.tcfg.restarts+', step '+S.it+'/'+S.tcfg.iters+
+        (S.bestFeas.th?'; best '+objTxt(S.bestFeas):''));
+    }
+    updateUI();
+  };
+  S.worker.postMessage({cmd:'start',cfg:{...pc,order:S.order,spec:S.spec,tcfg:S.tcfg,
+    seed:(Date.now()%2147483647)||1}});
+  document.getElementById('btnRun').disabled=true;
+  document.getElementById('btnStop').disabled=false;
+  document.getElementById('prog').style.display='block';
+  setStatus('Training started in a background worker...');
+}
+
+/* ================= UI ================= */
+function extraMetrics(bf){
+  const sig=bf.th.join(',');
+  if(S._emSig===sig)return S._emTxt;
+  const dt=bf.dt, co=ctrlCoeffs(bf.th,bf.order,dt);
+  function pev(arr,wr){
+    let re=0,im=0;
+    for(const c of arr){const nr=-im*wr, ni=re*wr; re=nr+c; im=ni;}
+    return [re,im];
+  }
+  function cdiv(a,b){const d=b[0]*b[0]+b[1]*b[1];
+    return [(a[0]*b[0]+a[1]*b[1])/d,(a[1]*b[0]-a[0]*b[1])/d];}
+  function cmul(a,b){return [a[0]*b[0]-a[1]*b[1],a[0]*b[1]+a[1]*b[0]];}
+  let Ms=0,Mt=0;
+  const wtop=Math.PI/dt;
+  for(let lw=-2.5;lw<=Math.log10(wtop)-0.01;lw+=0.004){
+    const w=Math.pow(10,lw);
+    const P0=cdiv(pev(S.numN,w),pev(S.den,w));
+    const ph=-w*S.L, P=cmul(P0,[Math.cos(ph),Math.sin(ph)]);
+    const th2=w*dt, zr=Math.cos(th2), zi=Math.sin(th2);
+    const z2r=zr*zr-zi*zi, z2i=2*zr*zi, z3r=z2r*zr-z2i*zi, z3i=z2r*zi+z2i*zr;
+    const nn=[co.w0*z3r+co.w1*z2r+(co.w2||0)*zr+(co.w3||0), co.w0*z3i+co.w1*z2i+(co.w2||0)*zi];
+    const dd=[z3r-co.d1*z2r-(co.d2||0)*zr-(co.d3||0), z3i-co.d1*z2i-(co.d2||0)*zi];
+    const C=cdiv(nn,dd);
+    const Lw=cmul(C,P);
+    const Sm=1/Math.hypot(1+Lw[0],Lw[1]);
+    Ms=Math.max(Ms,Sm); Mt=Math.max(Mt,Math.hypot(Lw[0],Lw[1])*Sm);
+  }
+  const pl=S.plant, n2=pl.n;
+  const x=new Float64Array(n2);
+  const dbl=Math.max(1,pl.delay); const ub=new Float64Array(dbl); let ptr=0;
+  const eH=[0,0,0], uH=[0,0,0]; let IAE=0;
+  const NN=Math.round(60/dt);
+  for(let k=0;k<=NN;k++){
+    let y=0; for(let j=0;j<n2;j++)y+=pl.C[j]*x[j];
+    const e=-y;
+    const u=co.d1*uH[0]+(co.d2||0)*uH[1]+(co.d3||0)*uH[2]+co.w0*e+co.w1*eH[0]+(co.w2||0)*eH[1]+(co.w3||0)*eH[2];
+    eH[2]=eH[1];eH[1]=eH[0];eH[0]=e; uH[2]=uH[1];uH[1]=uH[0];uH[0]=u;
+    const ud=pl.delay===0?u:ub[ptr]; if(pl.delay>0){ub[ptr]=u;ptr=(ptr+1)%dbl;}
+    const xn=new Float64Array(n2);
+    for(let i2=0;i2<n2;i2++){let acc=0;for(let j=0;j<n2;j++)acc+=pl.Ad[i2][j]*x[j];xn[i2]=acc+pl.Bd[i2]*(ud+1);}
+    for(let i2=0;i2<n2;i2++)x[i2]=xn[i2];
+    IAE+=Math.abs(y)*dt;
+    if(!isFinite(y)||Math.abs(y)>100){IAE=Infinity;break;}
+  }
+  S._emSig=sig;
+  S._emTxt="Ms = "+Ms.toFixed(2)+"   Mt = "+Mt.toFixed(2)+"   IAEload = "+(isFinite(IAE)?IAE.toFixed(3):"unstable")+
+    ((S.Kdc&&S.Kdc!==1)?" (unit-gain plant)":"");
+  return S._emTxt;
+}
+
+function contGains(bf){
+  const Kdc=S.Kdc||1;
+  const o=bf.order,dt=bf.dt;
+  const t=o===1
+    ?[bf.th[0]/Kdc,bf.th[1]/Kdc,bf.th[2]]
+    :o===2
+    ?[bf.th[0]/Kdc,bf.th[1]/Kdc,bf.th[2]/Kdc,bf.th[3],bf.th[4]]
+    :[bf.th[0]/Kdc,bf.th[1]/Kdc,bf.th[2]/Kdc,bf.th[3]/Kdc,bf.th[4],bf.th[5],bf.th[6]];
+  let s='';
+  if(o===1){
+    s='Kp = '+t[0].toFixed(4)+'   Ki = '+t[1].toFixed(4)+'\npole z1 = '+(1+t[2]/100).toFixed(6)+' (integrator if 1)';
+  }else if(o===2){
+    const z2=t[4];
+    s='Kp = '+t[0].toFixed(4)+'   Ki = '+t[1].toFixed(4)+'   Kd = '+t[2].toFixed(4)+
+      '\npoles z1 = '+(1+t[3]/100).toFixed(6)+', z2 = '+z2.toFixed(4);
+    if(z2>0.01)s+='   (z2 \u2192 N = '+(-Math.log(z2)/dt).toFixed(1)+')';
+  }else{
+    s='Kp = '+t[0].toFixed(4)+'   Ki = '+t[1].toFixed(4)+'   Kd = '+t[2].toFixed(4)+'   Kdd = '+t[3].toFixed(5)+
+      '\npoles z1 = '+(1+t[4]/100).toFixed(6)+', z2 = '+t[5].toFixed(4)+', z3 = '+t[6].toFixed(4);
+  }
+  const co=ctrlCoeffs(t,o,dt);
+  s+='\nC(z): w = ['+co.w0.toFixed(5)+', '+co.w1.toFixed(5)+(o>=2?', '+co.w2.toFixed(5):'')+(o===3?', '+co.w3.toFixed(5):'')+']'+
+     '  d = ['+co.d1.toFixed(5)+(o>=2?', '+co.d2.toFixed(5):'')+(o===3?', '+co.d3.toFixed(5):'')+']';
+  const m=bf.met;
+  s+='\nTs = '+m.Ts.toFixed(4)+'   PO = '+(100*m.PO).toFixed(3)+'%   TV0 = '+m.TV0.toExponential(1)+'   TV(u) = '+m.TVu.toFixed(2);
+  if(m.PM!==undefined)s+='\nworker check: Ms = '+m.Ms.toFixed(2)+'   Mt = '+m.Mt.toFixed(2)+'   PM = '+(m.PM>=179.9?'inf':m.PM.toFixed(1)+' deg')+'   ki = '+m.kic.toFixed(4);
+  if(Kdc!==1)s+='\n(plant DC gain '+Kdc.toPrecision(4)+' auto-normalized; gains shown are for the real plant)';
+  s+='\n'+extraMetrics(bf);
+  s+='\ngains are velocity-basis weights of C(z) (paper convention),';
+  s+='\nnot textbook PID gains; continuous checks: d2c(C(z), tustin)';
+  return s;
+}
+function objTxt(bf){
+  return (S.spec&&S.spec.case==='C')
+    ? 'ki = '+(bf.met&&bf.met.kic!==undefined?bf.met.kic.toFixed(3):'-')
+    : 'Ts = '+bf.Ts.toFixed(3);
+}
+function updateUI(){
+  document.getElementById('rRun').textContent=S.run+'/'+(S.tcfg?S.tcfg.restarts:'-');
+  document.getElementById('rFeasN').textContent=S.feasCount+(S.curRunFeas?'+':'');
+  const prog=document.getElementById('prog');
+  if(S.tcfg)prog.value=((S.run-1)*S.tcfg.iters+S.it)/(S.tcfg.restarts*S.tcfg.iters);
+  if(S.bestFeas.th){
+    document.getElementById('rBestLbl').textContent=(S.spec&&S.spec.case==='C')?'Best feasible ki':'Best feasible Ts';
+    document.getElementById('rBestTs').textContent=(S.spec&&S.spec.case==='C')?S.bestFeas.met.kic.toFixed(3):S.bestFeas.Ts.toFixed(3);
+    document.getElementById('rGains').textContent='best feasible controller\n'+contGains(S.bestFeas);
+    document.getElementById('btnCopy').disabled=false;
+  }
+  if(S.running)setStatus('Training restart '+S.run+'/'+S.tcfg.restarts+', step '+S.it+'/'+S.tcfg.iters+
+    (S.bestFeas.th?'; best '+objTxt(S.bestFeas):''));
+  draw();
+}
+function fitCanvas(c){
+  const r=c.getBoundingClientRect(),d=window.devicePixelRatio||1;
+  if(!c.dataset.h)c.dataset.h=c.getAttribute('height'); // logical height, immune to attribute mutation
+  const hcss=+c.dataset.h;
+  const bw=Math.round(r.width*d),bh=Math.round(hcss*d);
+  if(c.width!==bw||c.height!==bh){c.width=bw;c.height=bh;}
+  c.style.height=hcss+'px';
+  const ctx=c.getContext('2d');ctx.setTransform(d,0,0,d,0,0);
+  return{ctx,w:r.width,h:hcss};
+}
+function line(ctx,x1,y1,x2,y2){ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();}
+function draw(){drawStep();}
+function drawStep(){
+  const c=document.getElementById('cStep'),{ctx,w,h}=fitCanvas(c);
+  ctx.clearRect(0,0,w,h);
+  const ml=44,mr=10,mt=12,mb=26,pw=w-ml-mr,ph=h-mt-mb;
+  ctx.strokeStyle='#2a3644';ctx.strokeRect(ml,mt,pw,ph);
+  if(!S.plant||!S.spec)return;
+  const N=S.tcfg?S.tcfg.N:Math.round(40/S.plant.dt);
+  if(S.bestFeas.th&&!S.roB)S.roB=rollout(S.bestFeas.th,S.bestFeas.order,S.plant,{N,grad:false});
+  const roB=S.bestFeas.th?S.roB:null;
+  const T=N*S.plant.dt;
+  const ymin=-0.05,ymax=1.2; // fixed scale; traces outside are clipped
+  const X=t=>ml+pw*t/T,Y=v=>mt+ph*(1-(v-ymin)/(ymax-ymin));
+  ctx.fillStyle='rgba(111,220,140,0.07)';
+  ctx.fillRect(ml,Y(1+S.spec.band),pw,Y(1-S.spec.band)-Y(1+S.spec.band));
+  ctx.strokeStyle='rgba(111,220,140,0.35)';ctx.setLineDash([4,4]);
+  line(ctx,ml,Y(1+S.spec.band),ml+pw,Y(1+S.spec.band));
+  line(ctx,ml,Y(1-S.spec.band),ml+pw,Y(1-S.spec.band));
+  ctx.setLineDash([]);
+  ctx.strokeStyle='rgba(215,224,234,0.25)';
+  line(ctx,ml,Y(1),ml+pw,Y(1));line(ctx,ml,Y(0),ml+pw,Y(0));
+  if(!S.spec.mono&&S.spec.POmax>0){
+    ctx.strokeStyle='rgba(255,122,122,0.4)';ctx.setLineDash([2,5]);
+    line(ctx,ml,Y(1+S.spec.POmax),ml+pw,Y(1+S.spec.POmax));ctx.setLineDash([]);
+  }
+  const trace=(r,col)=>{
+    ctx.strokeStyle=col;ctx.lineWidth=1.6;ctx.beginPath();
+    const step=Math.max(1,Math.floor(r.N/1200));
+    for(let i=0;i<=r.N;i+=step){
+      const x=X(i*r.dt),y=Y(Math.max(ymin,Math.min(ymax,r.y[i])));
+      i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+    }
+    ctx.stroke();ctx.lineWidth=1;
+  };
+  if(roB)trace(roB,'#6fdc8c');
+  if(S.bestFeas.th){
+    ctx.strokeStyle='rgba(111,220,140,0.5)';ctx.setLineDash([3,3]);
+    line(ctx,X(S.bestFeas.Ts),mt,X(S.bestFeas.Ts),mt+ph);ctx.setLineDash([]);
+  }
+  ctx.fillStyle='#8496a8';ctx.font='11px ui-monospace,monospace';
+  for(let k=0;k<=5;k++) ctx.fillText((T*k/5).toFixed(0),ml+pw*k/5-6,h-8);
+  for(const v of [0,0.2,0.4,0.6,0.8,1.0,1.2]){
+    ctx.fillText(v.toFixed(1),6,Y(v)+4);
+    if(v!==0&&v!==1){ctx.strokeStyle='rgba(42,54,68,0.6)';line(ctx,ml,Y(v),ml+pw,Y(v));}
+  }
+}
+/* ================= buttons ================= */
+function updSpecRows(){
+  const cs=val('specCase');
+  document.getElementById('rowPO').style.display=cs==='B'?'':'none';
+  document.getElementById('rowMs').style.display=cs==='C'?'':'none';
+  document.getElementById('rowPm').style.display=cs==='D'?'':'none';
+}
+document.getElementById('specCase').addEventListener('change',()=>{updSpecRows();readAll();draw();});
+updSpecRows();
+document.getElementById('btnRun').addEventListener('click',startTraining);
+document.getElementById('btnStop').addEventListener('click',()=>{
+  if(S.worker){S.worker.terminate();S.worker=null;}
+  S.running=false;
+  document.getElementById('btnRun').disabled=false;
+  document.getElementById('btnStop').disabled=true;
+  setStatus('Stopped.'+(S.bestFeas.th?' Best feasible '+objTxt(S.bestFeas):''));
+});
+document.getElementById('btnReset').addEventListener('click',()=>{
+  if(S.worker){S.worker.terminate();S.worker=null;}
+  S.running=false;S.run=0;S.it=0;S.curRunFeas=false;S.roB=null;S.feasCount=0;
+  S.bestFeas={obj:Infinity,Ts:Infinity,th:null,met:null};S.th=null;
+  document.getElementById('btnRun').disabled=false;
+  document.getElementById('btnStop').disabled=true;
+  document.getElementById('btnCopy').disabled=true;
+  document.getElementById('prog').style.display='none';
+  document.getElementById('rBestTs').textContent='-';
+  document.getElementById('rGains').textContent='best feasible controller: none yet';
+  readAll();draw();
+  updateUI();
+  setStatus('Reset.');
+});
+document.getElementById('btnCopy').addEventListener('click',()=>{
+  const bf=S.bestFeas;if(!bf.th)return;
+  const txt='SDDCS Tuner v0.22 result\nplant num=['+val('pnum')+'] den=['+val('pden')+'] L='+val('pdel')+
+    '\ncontroller order '+bf.order+', dt='+bf.dt+'\n'+contGains(bf)+
+    '\nspec case '+S.spec.case+': '+({A:'monotone min Ts',B:'min Ts, PO<='+val('pomax')+'%',C:'MIGO max ki, Ms<='+val('msmax'),D:'min Ts, PM>='+val('pmtgt')+' deg'}[S.spec.case])+', band='+val('band');
+  navigator.clipboard.writeText(txt).then(()=>setStatus('Result copied.'));
+});
+window.addEventListener('resize',draw);
+document.getElementById('btnEval').addEventListener('click',function(){
+  const pc=readAll(); if(!pc)return;
+  const out=document.getElementById('evOut');
+  const toks=val('evGains').split(/[,\s]+/).map(Number).filter(x=>!isNaN(x));
+  const mode=val('evMode');
+  let th=null, order=0, note='';
+  if(mode==='pidf'){
+    const dt=S.dtv;
+    if(toks.length===2){order=1; th=[toks[0]*S.Kdc,toks[1]*S.Kdc,0]; note='PI, backward-Euler exact';}
+    else if(toks.length===4){
+      order=2; const N=toks[3];
+      if(!(N>0)){out.textContent='N must be positive.';return;}
+      const z2=1/(1+dt*N), f=1-z2;
+      th=[toks[0]*f*S.Kdc,toks[1]*f*S.Kdc,toks[2]*f*S.Kdc,0,z2];
+      note='PIDF via z\u2082=1/(1+\u0394t\u00b7N)='+z2.toFixed(4)+', velocity K=K\u00b7(1-z\u2082), backward-Euler correspondence';
+    } else {out.textContent='PIDF mode expects 2 tokens (Kp Ki) or 4 tokens (Kp Ki Kd N).';return;}
+  } else {
+    if(toks.length===3){order=1;th=toks.slice();}
+    else if(toks.length===5){order=2;th=toks.slice();}
+    else if(toks.length===7){order=3;th=toks.slice();}
+    else {out.textContent='velocity mode expects 3, 5, or 7 tokens.';return;}
+    th=th.slice(); for(let i=0;i<(order===1?2:order===2?3:4);i++)th[i]*=S.Kdc;
+  }
+  const ro=rollout(th,order,S.plant,{N:S.tcfg.N,grad:false});
+  const hm=hardMetrics(ro,{band:S.spec.band,mono:true,POmax:-1,tolTV:1e-9});
+  const em=extraMetrics({th:th,order:order,dt:S.dtv});
+  let txt='order '+order+'  ('+note+')\n';
+  txt+='Ts = '+hm.Ts.toFixed(4)+'   PO = '+(100*hm.PO).toFixed(2)+'%   TV0 = '+hm.TV0.toExponential(1)+'   TV(u) = '+hm.TVu.toFixed(2)+'\n';
+  txt+=em+'\n';
+  const co=ctrlCoeffs(th,order,S.dtv);
+  txt+='C(z): w = ['+[co.w0,co.w1,co.w2,co.w3].slice(0,order+1).map(x=>x.toFixed(5)).join(', ')+']  d = ['+[co.d1,co.d2,co.d3].slice(0,order).map(x=>x.toFixed(5)).join(', ')+']';
+  out.textContent=txt;
+});
+(function boot(){readAll();draw();
+  setStatus('Ready. Default: FOTD T/L = 2, order 2, monotone; expected wall Ts \u2248 3.2L.');})();
+</script>
+</body>
+</html>
