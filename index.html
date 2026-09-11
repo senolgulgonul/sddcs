@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SDDCS Tuner v0.22</title>
+<title>SDDCS Tuner v0.26</title>
 <style>
 :root{
   --bg:#10151b; --panel:#161d26; --panel2:#1b2430; --line:#2a3644;
@@ -60,7 +60,7 @@ progress{width:100%;height:6px;accent-color:var(--accent);margin-top:6px}
 </head>
 <body>
 <header>
-  <h1>SDDCS Tuner</h1><span class="ver">v0.22</span>
+  <h1>SDDCS Tuner</h1><span class="ver">v0.26</span><span class="ver" style="margin-left:8px;opacity:.7" title="v0.26 (2026-09-11): MIGO solver now rejects tangency roots whose loop encircles -1 (Nyquist winding check); results cleared when plant or spec changes; MIGO output and 6-digit C(z) coefficients in Copy result. v0.25 (2026-09-11): batch P2 denominator corrected to 0.5 1.5 1. v0.24 (2026-09-11): ansatz cancellation zero gets a +/-6% free offset; certify can be seeded from the last certified point (chained shrinking); batch mode reproduces Table 1 (P1, P2, P3 at orders 1 and 2). v0.26 (2026-09-11): Certify stage (global grid, cancellation ansatz, seeded), exact MIGO solver (Astrom-Hagglund lower-vertex locus, validated against the book), Copy result now includes certified and evaluated blocks, overlays for certified and evaluated step responses.">changelog</span>
   <span class="sub">a recurrent linear unit trained by pathwise gradient through the exact discrete closed loop</span>
 </header>
 <main>
@@ -103,9 +103,18 @@ progress{width:100%;height:6px;accent-color:var(--accent);margin-top:6px}
     <div class="row"><label for="iters">Adam steps per restart</label><input type="number" id="iters" value="4000" step="500"></div>
     <div class="row"><label for="lr">Learning rate (cosine decay)</label><input type="number" id="lr" value="0.003" step="0.001"></div>
     <div class="row"><label for="integ">Integrator start (z&#8321; = 1)</label><input type="checkbox" id="integ" checked></div>
+    <div class="note">Certify runs a zero-tolerance shrinking-grid search (a coarse full-range scan, then up to eight separated candidates each refined by six shrinking stages; gains in log scale, poles and zeros dense near z = 1). Global grid: order 1 over gain, zero, pole. Cancellation ansatz: order 2 with one zero placed on the discrete plant pole (or both zeros on a complex pair) and the rest searched, the distilled parametrization of the paper. Around trained solution: local search seeded by the best trained controller (any order 1 or 2 result). With the integrator box checked the integrator pole is pinned at z&#8321; = 1 (required for case C).</div>
     <div class="note">Loss: smoothed settling + &lambda;&#183;TV&#8320; continuation (300 &rarr; 3000 &rarr; 30000) + tail term + bound term; overshoot hinge when monotonicity is off. Gradients are exact (forward sensitivities), clipped at 1. Integrator start places only the spec-mandated pole; gains and z&#8322; stay random (uncheck for the fully random ablation).</div>
     <div class="btns">
       <button class="primary" id="btnRun">Train</button>
+      <select id="certMode" title="certification mode">
+        <option value="global">Certify: global grid (order 1)</option>
+        <option value="ansatz">Certify: cancellation ansatz (order 2)</option>
+        <option value="seeded">Certify: around trained solution</option>
+        <option value="seededC">Certify: around last certified point</option>
+      </select>
+      <button id="btnCert">Certify</button>
+      <button id="btnBatch" title="P1, P2, P3 at orders 1 and 2 under the current spec: global grid, ansatz, then chained seeded refinement">Certify Table 1</button>
       <button id="btnStop" disabled>Stop</button>
       <button id="btnReset">Reset</button>
     </div>
@@ -117,7 +126,7 @@ progress{width:100%;height:6px;accent-color:var(--accent);margin-top:6px}
 <div>
   <div class="plotwrap">
     <canvas id="cStep" height="340"></canvas>
-    <div class="legend"><span class="leg-best">best feasible y(t)</span></div>
+    <div class="legend"><span class="leg-best">best feasible y(t)</span> &nbsp; <span style="color:#f2b45c">certified y(t)</span> &nbsp; <span style="color:#8ab4ff">evaluated y(t)</span></div>
   </div>
   <div class="panel">
     <h2>Readout</h2>
@@ -127,6 +136,8 @@ progress{width:100%;height:6px;accent-color:var(--accent);margin-top:6px}
       <div class="stat"><div class="k" id="rBestLbl">Best feasible Ts</div><div class="v good" id="rBestTs">-</div></div>
     </div>
     <div style="margin-top:10px" class="gains" id="rGains">best feasible controller: none yet</div>
+    <div style="margin-top:10px" class="gains" id="cGains">certified optimum: not run</div>
+    <div class="gains" id="batchOut" style="margin-top:10px;display:none"></div>
     <h2 style="margin-top:14px">Evaluate external gains</h2>
     <div class="row"><label for="evMode">Interpretation</label>
       <select id="evMode">
@@ -136,6 +147,15 @@ progress{width:100%;height:6px;accent-color:var(--accent);margin-top:6px}
     <div class="row"><label for="evGains">Gains (space-separated)</label><input class="wide" type="text" id="evGains" value=""></div>
     <div class="btns"><button id="btnEval">Evaluate</button></div>
     <div style="margin-top:10px" class="gains" id="evOut">paste pidtune or paper gains, then Evaluate; same instrument as training (ZOH, current &Delta;t, band, load IAE)</div>
+    <h2 style="margin-top:14px">Exact MIGO (&Aring;str&ouml;m&ndash;H&auml;gglund)</h2>
+    <div class="row"><label for="mgType">Controller</label>
+      <select id="mgType"><option value="PI" selected>PI</option><option value="PID">PID (ideal derivative)</option></select></div>
+    <div class="row"><label for="mgCircle">Circle</label>
+      <select id="mgCircle"><option value="combined" selected>combined M circle (Ms and Mt)</option><option value="ms">sensitivity only (Ms = M)</option></select></div>
+    <div class="row"><label for="mgM">M</label><input type="number" id="mgM" value="1.4" step="0.05"></div>
+    <div class="row"><label for="mgN">N for Evaluate (PID filter)</label><input type="number" id="mgN" value="100" step="10"></div>
+    <div class="btns"><button id="btnMigo">Solve</button><button id="btnMigoEval">Send to Evaluate</button></div>
+    <div style="margin-top:10px" class="gains" id="mgOut">lower-vertex locus + tangency condition + full-frequency circle check; continuous plant, no discretization (validated against the book's worked designs)</div>
     <div class="btns" style="margin-top:8px"><button id="btnCopy" disabled>Copy result</button></div>
   </div>
 </div>
@@ -495,9 +515,115 @@ function wChunk(){
   wPost('progress');
   setTimeout(wChunk,0);
 }
+/* ---- certification: zero-tolerance shrinking-grid search ---- */
+function cTh(p){ // p: parameter vector in distilled coordinates -> th
+  const dt=W.dt;
+  if(W.order===1){const [K,zz,zp]=p;return [K*zz,K*(1-zz)/dt,(zp-1)*100];}
+  const [K,a,b,z1,z2]=p;let w0,w1,w2;
+  if(Array.isArray(a)){w0=K;w1=-K*a[0];w2=K*a[1];}else{w0=K;w1=-K*(a+b);w2=K*a*b;}
+  const Kd=w2*dt,Kp=-w1-2*w2,Ki=(w0-Kp-w2)/dt;
+  return [Kp,Ki,Kd,(z1-1)*100,z2];
+}
+const U=z=>Math.log10(Math.max(1e-12,1-z)),Z=u=>1-Math.pow(10,u);
+function cPlantZeros(){ // discrete plant poles to cancel (order 2 ansatz)
+  const d=W.den,n=d.length-1;
+  if(n===1)return {fixed:[Math.exp(-d[1]/d[0]*W.dt)]};
+  if(n===2){const a=d[0],b=d[1],c=d[2];const disc=b*b-4*a*c;
+    if(disc>=0){const r1=(-b+Math.sqrt(disc))/(2*a),r2=(-b-Math.sqrt(disc))/(2*a);const slow=Math.abs(r1)<Math.abs(r2)?r1:r2;return {fixed:[Math.exp(slow*W.dt)]};}
+    const re=-b/(2*a),im=Math.sqrt(-disc)/(2*a);const m=Math.exp(re*W.dt);return {pair:[2*m*Math.cos(im*W.dt),m*m]};}
+  return null;
+}
+function cStart(){
+  const o=W.order,pin=W.pin,full={K:[-2,1.8],zz:[-3.3,0.29],zp:[-3.3,0.29],a:[-3.3,0.29],b:[-3.3,0.29],z1:[-3.3,0.29],z2:[-2,0.29],dz:[-0.06,0.06]}; // K: log10 K; poles/zeros: z = 1 - 10^u (dense near 1)
+  W.fixed=null;W.pair=null;
+  if(W.mode==='global'){
+    W.dims=pin?['K','zz']:['K','zz','zp'];
+  }else if(W.mode==='ansatz'){
+    const pz=cPlantZeros();if(!pz){postMessage({type:'cerr',msg:'Ansatz needs a plant of degree 1 or 2.'});W.running=false;return;}
+    if(pz.pair){W.pair=pz.pair;W.dims=pin?['K','z2']:['K','z1','z2'];}
+    else{W.fixed=pz.fixed[0];W.dims=pin?['K','dz','b','z2']:['K','dz','b','z1','z2'];}
+  }else{ // seeded
+    W.dims=o===1?(pin?['K','zz']:['K','zz','zp']):(pin?['K','a','b','z2']:['K','a','b','z1','z2']);
+  }
+  W.lim=W.dims.map(d=>full[d].slice());
+  if(W.mode==='seeded'){
+    const th=W.seed,co=ctrlCoeffs(th,o,W.dt);let c={};
+    if(o===1){c.K=Math.log10(Math.abs(co.w0));c.zz=U(-co.w1/co.w0);c.zp=U(co.d1);}
+    else{const A=co.w0,B=co.w1,C=co.w2;const disc=B*B-4*A*C;const s1=disc>=0?(-B+Math.sqrt(disc))/(2*A):-B/(2*A),s2=disc>=0?(-B-Math.sqrt(disc))/(2*A):-B/(2*A);
+      c.K=Math.log10(Math.abs(A));c.a=U(Math.max(s1,s2));c.b=U(Math.min(s1,s2));c.z1=U(co.z1);c.z2=U(co.z2);}
+    W.rng=W.dims.map((d,i)=>{const w=d==='K'?0.25:0.35;return [Math.max(W.lim[i][0],c[d]-w),Math.min(W.lim[i][1],c[d]+w)];});
+    W.n={2:60,3:24,4:12,5:9}[W.dims.length];
+  }else{
+    W.rng=W.dims.map(d=>full[d].slice());
+    W.n={2:160,3:34,4:W.mode==='ansatz'?18:22,5:11}[W.dims.length];
+  }
+  W.full=full;W.cands=[];W.candBest=null;W.nRef={2:40,3:16,4:11,5:8}[W.dims.length];
+  W.stage=0;W.idx=0;W.total=Math.pow(W.n+1,W.dims.length);W.evals=0;W.cbest=null;
+  if(W.mode==='seeded'){const hm=wCaseHm(W.seed);if(hm.caseFeasible){const co=ctrlCoeffs(W.seed,W.order,W.dt);
+    let p;if(W.order===1)p=[Math.log10(Math.abs(co.w0)),U(-co.w1/co.w0),U(co.d1)];
+    else{const A=co.w0,B=co.w1,C=co.w2,disc=B*B-4*A*C;const s1=disc>=0?(-B+Math.sqrt(disc))/(2*A):-B/(2*A),s2=disc>=0?(-B-Math.sqrt(disc))/(2*A):-B/(2*A);
+      const c={K:Math.log10(Math.abs(A)),a:U(Math.max(s1,s2)),b:U(Math.min(s1,s2)),z1:U(co.z1),z2:U(co.z2)};p=W.dims.map(d=>c[d]);}
+    W.cbest={obj:hm.obj,Ts:hm.Ts,th:W.seed.slice(),met:hm,order:W.order,dt:W.dt,p};cAddCand(W.cbest);}}
+}
+function cSetRange(bp,f){
+  for(let d=0;d<W.dims.length;d++){const w=(W.rng[d][1]-W.rng[d][0])*f;
+    W.rng[d]=[Math.max(W.lim[d][0],bp[d]-w),Math.min(W.lim[d][1],bp[d]+w)];}
+  W.candBest=null;
+}
+function cAddCand(rec){ // keep up to 8 best, separated by >8% of range in every coordinate? no: in normalized distance
+  const norm=p=>p.map((v,d)=>(v-W.lim[d][0])/(W.lim[d][1]-W.lim[d][0]));
+  const np=norm(rec.p);
+  for(const c of W.cands){const nc=norm(c.p);let dist=0;for(let d=0;d<np.length;d++)dist=Math.max(dist,Math.abs(np[d]-nc[d]));
+    if(dist<0.12){if(rec.obj<c.obj){c.obj=rec.obj;c.p=rec.p;}return;}}
+  W.cands.push({obj:rec.obj,p:rec.p});W.cands.sort((a,b)=>a.obj-b.obj);if(W.cands.length>8)W.cands.length=8;
+}
+function cPoint(idx){
+  const p=[];let r=idx;
+  for(let d=0;d<W.dims.length;d++){const q=r%(W.n+1);r=Math.floor(r/(W.n+1));p.push(W.rng[d][0]+(W.rng[d][1]-W.rng[d][0])*q/W.n);}
+  const full={};W.dims.forEach((d,i)=>full[d]=p[i]);
+  const K=Math.pow(10,full.K);
+  if(W.order===1)return [K,Z(full.zz),W.pin?1:Z(full.zp)];
+  if(W.pair)return [K,W.pair,null,W.pin?1:Z(full.z1),Z(full.z2)]; // complex pair: numerator K(1 - s1 z^-1 - s2 z^-2) handled in cTh
+  return [K,W.fixed!==null?W.fixed*(1+(full.dz||0)):Z(full.a),Z(full.b),W.pin?1:Z(full.z1),Z(full.z2)];
+}
+function cChunk(){
+  if(!W.running)return;
+  const t0=Date.now();
+  while(Date.now()-t0<200){
+    if(W.idx>=W.total){
+      // stage 0 (coarse, full range) collects up to 8 separated candidates; each is then refined by 6 shrinking stages
+      if(W.stage===0){
+        if(!W.cands.length){W.running=false;postMessage({type:'cdone',best:null,evals:W.evals});return;}
+        W.ci=0;W.stage=1;cSetRange(W.cands[0].p,0.2);W.idx=0;W.n=W.nRef;W.total=Math.pow(W.n+1,W.dims.length);continue;
+      }
+      W.stage++;
+      if(W.stage>=7){
+        W.ci++;
+        if(W.ci>=W.cands.length){W.running=false;postMessage({type:'cdone',best:W.cbest,evals:W.evals});return;}
+        W.stage=1;W.rng=W.dims.map(d=>W.full[d].slice());cSetRange(W.cands[W.ci].p,0.2);W.idx=0;W.total=Math.pow(W.n+1,W.dims.length);continue;
+      }
+      cSetRange(W.candBest.p,0.2);W.idx=0;continue;
+    }
+    const p=cPoint(W.idx);W.idx++;W.evals++;
+    const th=cTh(p);const hm=wCaseHm(th);
+    if(hm.caseFeasible){
+      const rec={obj:hm.obj,Ts:hm.Ts,th:th,met:hm,order:W.order,dt:W.dt,p:W.dims.map(d=>{const v=W.order===1?{K:Math.log10(p[0]),zz:U(p[1]),zp:U(p[2])}:{K:Math.log10(p[0]),a:Array.isArray(p[1])?0:U(p[1]),dz:(W.fixed!==null&&!Array.isArray(p[1]))?(p[1]/W.fixed-1):0,b:p[2]===null?0:U(p[2]),z1:U(p[3]),z2:U(p[4])};return v[d];})};
+      if(!W.cbest||rec.obj<W.cbest.obj)W.cbest=rec;
+      if(W.stage===0)cAddCand(rec);
+      else if(!W.candBest||rec.obj<W.candBest.obj)W.candBest=rec;
+    }
+  }
+  postMessage({type:'cprogress',stage:W.stage,ci:W.ci||0,nc:W.cands.length,idx:W.idx,total:W.total,evals:W.evals,best:W.cbest});
+  setTimeout(cChunk,0);
+}
 self.onmessage=e=>{
   const m=e.data;
-  if(m.cmd==='start'){
+  if(m.cmd==='certify'){
+    const c=m.cfg;
+    W={running:true,order:c.order,spec:c.spec,tcfg:c.tcfg,pin:c.pin,mode:c.mode,seed:c.seed,
+       num:c.num,den:c.den,L:c.L,dt:c.dt,plant:plantFromTF(c.num,c.den,c.L,c.dt)};
+    wBuildFreq();cStart();if(W.running)cChunk();
+  }else if(m.cmd==='start'){
     const c=m.cfg;
     W={running:true,seed:c.seed,order:c.order,spec:c.spec,tcfg:c.tcfg,
        run:0,it:0,feasCount:0,curRunFeas:false,best:null,
@@ -515,7 +641,7 @@ self.onmessage=e=>{
 'use strict';
 /* ================= main thread: UI + drawing; training lives in a Web Worker
    so it keeps running when the tab is in the background ================= */
-const S={running:false,plant:null,order:2,spec:null,tcfg:null,
+const S={running:false,plant:null,order:2,spec:null,tcfg:null,cert:null,roC:null,roE:null,evTxt:'',
   run:0,it:0,feasCount:0,curRunFeas:false,
   bestFeas:{Ts:Infinity,th:null,met:null},roB:null,worker:null};
 function val(id){return document.getElementById(id).value;}
@@ -534,6 +660,7 @@ function readAll(){
     Kdc=num[num.length-1]/denC;
     if(!isFinite(Kdc)||Kdc===0){setStatus('Plant DC gain unusable.',true);return null;}
   } // integrating plants (den const 0): no amplitude normalization
+  S.integPlant=(denC===0);
   S.Kdc=Kdc;
   const numN=num.map(c=>c/Kdc);
   const plant=plantFromTF(numN,den,L,dt);
@@ -590,8 +717,144 @@ function startTraining(){
   document.getElementById('btnRun').disabled=true;
   document.getElementById('btnStop').disabled=false;
   document.getElementById('prog').style.display='block';
-  setStatus('Training started in a background worker...');
+  setStatus('Training started in a background worker...'+(S.integPlant&&S.tcfg.integ?' Note: plant already integrates; the pinned controller integrator makes the loop type 2.':''));
 }
+
+function startCertify(){
+  if(S.running)return;
+  const pc=readAll();if(!pc)return;
+  const mode=val('certMode');
+  let order=S.order,seed=null;
+  if(mode==='global'){order=1;}
+  else if(mode==='ansatz'){order=2;}
+  else if(mode==='seededC'){if(!S.cert||!S.cert.th){setStatus('Certify first: this mode refines the last certified point.',true);return;}
+    order=S.cert.order;seed=S.cert.th;}
+  else{if(!S.bestFeas.th){setStatus('Train first: seeded certification needs a trained controller.',true);return;}
+    order=S.bestFeas.order;if(order===3){setStatus('Certification supports order 1 and 2 only.',true);return;}seed=S.bestFeas.th;}
+  const pin=document.getElementById('integ').checked;
+  if(S.spec.case==='C'&&!pin){setStatus('Case C needs the integrator pinned: check the integrator box.',true);return;}
+  S.running=true;S.cert=null;S.roC=null;
+  if(S.worker)S.worker.terminate();
+  S.worker=makeWorker();
+  S.worker.onmessage=e=>{
+    const m=e.data;
+    if(m.type==='cerr'){S.running=false;document.getElementById('btnRun').disabled=false;document.getElementById('btnCert').disabled=false;document.getElementById('btnStop').disabled=true;setStatus(m.msg,true);return;}
+    if(m.best){S.cert=m.best;S.roC=null;}
+    if(m.type==='cdone'){
+      S.running=false;
+      document.getElementById('btnRun').disabled=false;document.getElementById('btnCert').disabled=false;
+      document.getElementById('btnStop').disabled=true;
+      setStatus(S.cert?'Certified: '+objTxt(S.cert)+' after '+m.evals+' rollouts (zero-tolerance).':'Certification found no feasible point; lengthen the horizon or relax the spec.');
+      if(S.batch)batchNext();
+    }else{
+      setStatus('Certifying '+(m.stage===0?'coarse scan':'candidate '+(m.ci+1)+'/'+m.nc+', stage '+m.stage+'/6')+', '+m.idx+'/'+m.total+(S.cert?'; best '+objTxt(S.cert):''));
+    }
+    document.getElementById('cGains').textContent=S.cert?'certified optimum ('+{global:'global grid',ansatz:'cancellation ansatz',seeded:'seeded from trained',seededC:'refined from certified'}[mode]+', '+(pin?'integrator pinned':'poles free')+')\n'+contGains(S.cert):'certified optimum: searching';
+    if(S.cert)document.getElementById('btnCopy').disabled=false;
+    draw();
+  };
+  S.worker.postMessage({cmd:'certify',cfg:{...pc,order,spec:S.spec,tcfg:S.tcfg,pin,mode:mode==='seededC'?'seeded':mode,seed}});
+  document.getElementById('btnRun').disabled=true;document.getElementById('btnCert').disabled=true;
+  document.getElementById('btnStop').disabled=false;
+  setStatus('Certification started in a background worker...');
+}
+document.getElementById('btnCert').addEventListener('click',startCertify);
+/* ---- batch: Table 1 ---- */
+function leadTau(bf){const co=ctrlCoeffs(bf.th,bf.order,bf.dt);
+  if(bf.order===1)return bf.dt/(1+co.w1/co.w0);
+  const A=co.w0,B=co.w1,C=co.w2,disc=B*B-4*A*C;if(disc<0)return NaN;
+  const z=[(-B+Math.sqrt(disc))/(2*A),(-B-Math.sqrt(disc))/(2*A)];
+  const den=parseCoeffs(val('pden'));let pole=null;
+  if(den.length===2)pole=Math.exp(-den[1]/den[0]*bf.dt);
+  else if(den.length===3){const d=den,dd=d[1]*d[1]-4*d[0]*d[2];if(dd>=0){const r1=(-d[1]+Math.sqrt(dd))/(2*d[0]),r2=(-d[1]-Math.sqrt(dd))/(2*d[0]);pole=Math.exp((Math.abs(r1)<Math.abs(r2)?r1:r2)*bf.dt);}}
+  const lead=pole===null?Math.min(...z):(Math.abs(z[0]-pole)<Math.abs(z[1]-pole)?z[1]:z[0]);
+  return bf.dt/(1-lead);}
+function batchNext(){
+  const q=S.batch;if(!q)return;
+  const last=S.cert;
+  if(q.cur){q.rows.push(q.cur.label+'\t'+(last&&last.th?last.Ts.toFixed(3):'infeasible')+'\t'+(last&&last.th?(last.met.kic).toFixed(3):'-')+'\t'+(last&&last.th?leadTau(last).toFixed(3):'-')+'\t'+(last&&last.th?last.met.TVu.toFixed(2):'-'));}
+  if(!q.steps.length){S.batch=null;const out=document.getElementById('batchOut');out.style.display='';
+    out.textContent='Table 1 batch ('+val('specCase')+', band '+val('band')+', dt '+val('dt')+', horizon '+val('Th')+')\nplant order/mode\tTs\tkI\ttau_lead\tTV(u)\n'+q.rows.join('\n');
+    S.batchTxt=out.textContent;document.getElementById('btnCopy').disabled=false;setStatus('Table 1 batch finished.');return;}
+  const st=q.steps.shift();q.cur=st;
+  document.getElementById('pnum').value=st.num;document.getElementById('pden').value=st.den;document.getElementById('pdel').value='1';
+  document.getElementById('integ').checked=true;
+  if(st.mode==='seededC'&&!(S.cert&&S.cert.th)){q.rows.push(st.label+'\tskipped');batchNext();return;}
+  document.getElementById('certMode').value=st.mode;
+  setTimeout(()=>{startCertify();if(!S.running){q.rows.push(st.label+'\tnot started');batchNext();}},50);
+}
+document.getElementById('btnBatch').addEventListener('click',()=>{
+  if(S.running)return;
+  const P=[['P1: e^-s/(2s+1)','1','2 1'],['P2: e^-s/((s+1)(0.5s+1))','1','0.5 1.5 1'],['P3: e^-s/(s^2+s+1)','1','1 1 1']];
+  const steps=[];
+  for(const p of P){
+    steps.push({label:p[0]+' order 1 global',num:p[1],den:p[2],mode:'global'});
+    steps.push({label:p[0]+' order 2 ansatz',num:p[1],den:p[2],mode:'ansatz'});
+    steps.push({label:p[0]+' order 2 refined',num:p[1],den:p[2],mode:'seededC'});
+  }
+  S.batch={steps,rows:[],cur:null};S.cert=null;
+  document.getElementById('batchOut').style.display='';document.getElementById('batchOut').textContent='Table 1 batch running (9 certifications, several minutes)...';
+  batchNext();
+});
+
+/* ================= exact MIGO ================= */
+function migoSolve(num,den,L,opt){
+  const M=opt.M||1.4, comb=opt.circle==='combined';
+  const c=comb?(2*M*M-2*M+1)/(2*M*(M-1)):1, r=comb?(2*M-1)/(2*M*(M-1)):1/M;
+  function P(w){let nr=0,ni=0;for(const cc of num){const tr=-ni*w,ti=nr*w;nr=tr+cc;ni=ti;}
+    let dr=0,di=0;for(const cc of den){const tr=-di*w,ti=dr*w;dr=tr+cc;di=ti;}
+    const dd=dr*dr+di*di;let Pr=(nr*dr+ni*di)/dd,Pi=(ni*dr-nr*di)/dd;
+    const ph=-w*L;return [Pr*Math.cos(ph)-Pi*Math.sin(ph),Pr*Math.sin(ph)+Pi*Math.cos(ph)];}
+  function polar(w){const p=P(w);return [Math.hypot(p[0],p[1]),Math.atan2(p[1],p[0])];}
+  const wg=[];for(let lw=-3;lw<=3;lw+=0.002)wg.push(Math.pow(10,lw));
+  const rho=[],phi=[];let prev=null;
+  for(const w of wg){let [rr,ph]=polar(w);if(prev!==null){while(ph-prev>Math.PI)ph-=2*Math.PI;while(ph-prev<-Math.PI)ph+=2*Math.PI;}prev=ph;rho.push(rr);phi.push(ph);}
+  function F(i,kd){const w=wg[i],ro=rho[i],ph=phi[i];
+    const dr=(rho[i+1]-rho[i-1])/(wg[i+1]-wg[i-1]),dp=(phi[i+1]-phi[i-1])/(wg[i+1]-wg[i-1]);
+    return (r+c*Math.sin(ph))*(dr/ro-1/w)-c*dp*Math.cos(ph)+2*ro*kd;}
+  function circleOK(k,ki,kd){let worst=Infinity,prev=null,tot=0;
+    for(let i=0;i<wg.length;i++){const w=wg[i];const p=P(w);const Cr=k,Ci=-ki/w+kd*w;
+      const Lr=Cr*p[0]-Ci*p[1],Li=Cr*p[1]+Ci*p[0];worst=Math.min(worst,Math.hypot(Lr+c,Li)-r);
+      let a=Math.atan2(Li,1+Lr);if(prev!==null){let d=a-prev;while(d>Math.PI)d-=2*Math.PI;while(d<-Math.PI)d+=2*Math.PI;tot+=d;}prev=a;}
+    if(Math.abs(tot-Math.PI/2)>Math.PI)return -1; // closed loop encircles -1: reject
+    return worst;}
+  function bestAt(kd){let best=null;
+    for(let i=2;i<wg.length-2;i++){const f0=F(i,kd),f1=F(i+1,kd);
+      if(f0===0||f0*f1<0){const t=f0===f1?0:f0/(f0-f1);const ws=wg[i]+t*(wg[i+1]-wg[i]);
+        let [ro,ph]=polar(ws);while(ph-phi[i]>Math.PI)ph-=2*Math.PI;while(ph-phi[i]<-Math.PI)ph+=2*Math.PI;
+        const k=-c*Math.cos(ph)/ro, ki=-(ws/ro)*(r+c*Math.sin(ph))+ws*ws*kd;
+        if(k>0&&ki>0){const m=circleOK(k,ki,kd);if(m>-3e-4&&(!best||ki>best.ki))best={k,ki,kd,w:ws,margin:m};}}}
+    return best;}
+  if(opt.type==='PI')return bestAt(0);
+  let kd=1e-3,last=bestAt(0),lastKd=0;
+  while(kd<1e4){const b=bestAt(kd);if(!b)break;last=b;lastKd=kd;kd*=1.25;}
+  let lo=lastKd,hi=kd;
+  for(let it=0;it<40;it++){const mid=0.5*(lo+hi);const b=bestAt(mid);if(b){last=b;lo=mid;}else hi=mid;}
+  return last;
+}
+document.getElementById('btnMigo').addEventListener('click',()=>{
+  const pc=readAll();if(!pc)return;
+  const out=document.getElementById('mgOut');
+  const num=parseCoeffs(val('pnum')),den=parseCoeffs(val('pden'));
+  if(den[den.length-1]===0){out.textContent='MIGO locus needs a non-integrating plant here.';return;}
+  const type=val('mgType'),circle=val('mgCircle'),M=+val('mgM');
+  const t0=Date.now();const sol=migoSolve(num,den,+val('pdel'),{type,circle,M});
+  if(!sol){out.textContent='No feasible tangency point found.';return;}
+  S.migo=sol;
+  out.textContent=S.migoTxt='exact MIGO '+type+', '+(circle==='combined'?'combined circle':'Ms circle')+', M = '+M+'\n'+
+    'k = '+sol.k.toPrecision(5)+'   ki = '+sol.ki.toPrecision(5)+(type==='PID'?'   kd = '+sol.kd.toPrecision(5):'')+
+    '\ntangency at w = '+sol.w.toPrecision(4)+', circle margin '+sol.margin.toExponential(2)+' ('+(Date.now()-t0)+' ms)'+
+    '\nC(s) = k + ki/s'+(type==='PID'?' + kd s (ideal derivative; Evaluate applies the filter N below)':'');
+});
+document.getElementById('btnMigoEval').addEventListener('click',()=>{
+  if(!S.migo){setStatus('Solve MIGO first.',true);return;}
+  const sol=S.migo;
+  document.getElementById('evMode').value='pidf';
+  document.getElementById('evGains').value=val('mgType')==='PID'
+    ?[sol.k,sol.ki,sol.kd].map(x=>x.toPrecision(5)).join(' ')+' '+val('mgN')
+    :[sol.k,sol.ki].map(x=>x.toPrecision(5)).join(' ');
+  document.getElementById('btnEval').click();
+});
 
 /* ================= UI ================= */
 function extraMetrics(bf){
@@ -665,8 +928,8 @@ function contGains(bf){
       '\npoles z1 = '+(1+t[4]/100).toFixed(6)+', z2 = '+t[5].toFixed(4)+', z3 = '+t[6].toFixed(4);
   }
   const co=ctrlCoeffs(t,o,dt);
-  s+='\nC(z): w = ['+co.w0.toFixed(5)+', '+co.w1.toFixed(5)+(o>=2?', '+co.w2.toFixed(5):'')+(o===3?', '+co.w3.toFixed(5):'')+']'+
-     '  d = ['+co.d1.toFixed(5)+(o>=2?', '+co.d2.toFixed(5):'')+(o===3?', '+co.d3.toFixed(5):'')+']';
+  s+='\nC(z): w = ['+co.w0.toFixed(6)+', '+co.w1.toFixed(6)+(o>=2?', '+co.w2.toFixed(6):'')+(o===3?', '+co.w3.toFixed(6):'')+']'+
+     '  d = ['+co.d1.toFixed(6)+(o>=2?', '+co.d2.toFixed(6):'')+(o===3?', '+co.d3.toFixed(6):'')+']';
   const m=bf.met;
   s+='\nTs = '+m.Ts.toFixed(4)+'   PO = '+(100*m.PO).toFixed(3)+'%   TV0 = '+m.TV0.toExponential(1)+'   TV(u) = '+m.TVu.toFixed(2);
   if(m.PM!==undefined)s+='\nworker check: Ms = '+m.Ms.toFixed(2)+'   Mt = '+m.Mt.toFixed(2)+'   PM = '+(m.PM>=179.9?'inf':m.PM.toFixed(1)+' deg')+'   ki = '+m.kic.toFixed(4);
@@ -742,6 +1005,8 @@ function drawStep(){
     ctx.stroke();ctx.lineWidth=1;
   };
   if(roB)trace(roB,'#6fdc8c');
+  if(S.cert&&S.cert.th){if(!S.roC)S.roC=rollout(S.cert.th,S.cert.order,S.plant,{N,grad:false});trace(S.roC,'#f2b45c');}
+  if(S.roE)trace(S.roE,'#8ab4ff');
   if(S.bestFeas.th){
     ctx.strokeStyle='rgba(111,220,140,0.5)';ctx.setLineDash([3,3]);
     line(ctx,X(S.bestFeas.Ts),mt,X(S.bestFeas.Ts),mt+ph);ctx.setLineDash([]);
@@ -768,12 +1033,15 @@ document.getElementById('btnStop').addEventListener('click',()=>{
   S.running=false;
   document.getElementById('btnRun').disabled=false;
   document.getElementById('btnStop').disabled=true;
+  document.getElementById('btnCert').disabled=false;S.batch=null;
   setStatus('Stopped.'+(S.bestFeas.th?' Best feasible '+objTxt(S.bestFeas):''));
 });
 document.getElementById('btnReset').addEventListener('click',()=>{
   if(S.worker){S.worker.terminate();S.worker=null;}
   S.running=false;S.run=0;S.it=0;S.curRunFeas=false;S.roB=null;S.feasCount=0;
-  S.bestFeas={obj:Infinity,Ts:Infinity,th:null,met:null};S.th=null;
+  S.bestFeas={obj:Infinity,Ts:Infinity,th:null,met:null};S.th=null;S.cert=null;S.roC=null;S.roE=null;S.evTxt='';S.batch=null;S.batchTxt='';document.getElementById('batchOut').style.display='none';
+  document.getElementById('cGains').textContent='certified optimum: not run';
+  document.getElementById('btnCert').disabled=false;
   document.getElementById('btnRun').disabled=false;
   document.getElementById('btnStop').disabled=true;
   document.getElementById('btnCopy').disabled=true;
@@ -785,13 +1053,28 @@ document.getElementById('btnReset').addEventListener('click',()=>{
   setStatus('Reset.');
 });
 document.getElementById('btnCopy').addEventListener('click',()=>{
-  const bf=S.bestFeas;if(!bf.th)return;
-  const txt='SDDCS Tuner v0.22 result\nplant num=['+val('pnum')+'] den=['+val('pden')+'] L='+val('pdel')+
-    '\ncontroller order '+bf.order+', dt='+bf.dt+'\n'+contGains(bf)+
-    '\nspec case '+S.spec.case+': '+({A:'monotone min Ts',B:'min Ts, PO<='+val('pomax')+'%',C:'MIGO max ki, Ms<='+val('msmax'),D:'min Ts, PM>='+val('pmtgt')+' deg'}[S.spec.case])+', band='+val('band');
+  const bf=S.bestFeas;if(!bf.th&&!S.cert&&!S.evTxt&&!S.batchTxt&&!S.migoTxt)return;
+  let txt='SDDCS Tuner v0.26 result\nplant num=['+val('pnum')+'] den=['+val('pden')+'] L='+val('pdel')+
+    '\nspec case '+S.spec.case+': '+({A:'monotone min Ts',B:'min Ts, PO<='+val('pomax')+'%',C:'MIGO max ki, Ms<='+val('msmax'),D:'min Ts, PM>='+val('pmtgt')+' deg'}[S.spec.case])+', band='+val('band')+', dt='+val('dt')+', horizon='+val('Th');
+  if(bf.th)txt+='\n\n[trained] controller order '+bf.order+'\n'+contGains(bf);
+  if(S.cert&&S.cert.th)txt+='\n\n[certified] controller order '+S.cert.order+'\n'+contGains(S.cert);
+  if(S.evTxt)txt+='\n\n[evaluated] '+S.evTxt;
+  if(S.batchTxt)txt+='\n\n[batch]\n'+S.batchTxt;
+  if(S.migoTxt)txt+='\n\n[exact MIGO] '+S.migoTxt;
   navigator.clipboard.writeText(txt).then(()=>setStatus('Result copied.'));
 });
 window.addEventListener('resize',draw);
+for(const id of ['pnum','pden','pdel','dt','Th','band','pomax','msmax','pmtgt','order']){
+  document.getElementById(id).addEventListener('change',()=>{
+    if(S.running||S.batch)return;
+    if(S.bestFeas.th||S.cert||S.evTxt){
+      S.bestFeas={obj:Infinity,Ts:Infinity,th:null,met:null};S.roB=null;S.cert=null;S.roC=null;S.roE=null;S.evTxt='';S.migo=null;S.migoTxt='';
+      document.getElementById('rBestTs').textContent='-';document.getElementById('rGains').textContent='best feasible controller: none yet';
+      document.getElementById('cGains').textContent='certified optimum: not run';document.getElementById('btnCopy').disabled=true;
+      readAll();draw();setStatus('Plant or spec changed: previous results cleared.');
+    }else{readAll();draw();}
+  });
+}
 document.getElementById('btnEval').addEventListener('click',function(){
   const pc=readAll(); if(!pc)return;
   const out=document.getElementById('evOut');
@@ -816,6 +1099,7 @@ document.getElementById('btnEval').addEventListener('click',function(){
     th=th.slice(); for(let i=0;i<(order===1?2:order===2?3:4);i++)th[i]*=S.Kdc;
   }
   const ro=rollout(th,order,S.plant,{N:S.tcfg.N,grad:false});
+  S.roE=ro;
   const hm=hardMetrics(ro,{band:S.spec.band,mono:true,POmax:-1,tolTV:1e-9});
   const em=extraMetrics({th:th,order:order,dt:S.dtv});
   let txt='order '+order+'  ('+note+')\n';
@@ -823,7 +1107,7 @@ document.getElementById('btnEval').addEventListener('click',function(){
   txt+=em+'\n';
   const co=ctrlCoeffs(th,order,S.dtv);
   txt+='C(z): w = ['+[co.w0,co.w1,co.w2,co.w3].slice(0,order+1).map(x=>x.toFixed(5)).join(', ')+']  d = ['+[co.d1,co.d2,co.d3].slice(0,order).map(x=>x.toFixed(5)).join(', ')+']';
-  out.textContent=txt;
+  out.textContent=txt;S.evTxt=txt;document.getElementById('btnCopy').disabled=false;draw();
 });
 (function boot(){readAll();draw();
   setStatus('Ready. Default: FOTD T/L = 2, order 2, monotone; expected wall Ts \u2248 3.2L.');})();
