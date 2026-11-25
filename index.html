@@ -60,7 +60,7 @@ progress{width:100%;height:6px;accent-color:var(--accent);margin-top:6px}
 </head>
 <body>
 <header>
-  <h1>SDDCS Tuner</h1><span class="ver">v0.26</span><span class="ver" style="margin-left:8px;opacity:.7" title="v0.26 (2026-09-11): MIGO solver now rejects tangency roots whose loop encircles -1 (Nyquist winding check); results cleared when plant or spec changes; MIGO output and 6-digit C(z) coefficients in Copy result. v0.25 (2026-09-11): batch P2 denominator corrected to 0.5 1.5 1. v0.24 (2026-09-11): ansatz cancellation zero gets a +/-6% free offset; certify can be seeded from the last certified point (chained shrinking); batch mode reproduces Table 1 (P1, P2, P3 at orders 1 and 2). v0.26 (2026-09-11): Certify stage (global grid, cancellation ansatz, seeded), exact MIGO solver (Astrom-Hagglund lower-vertex locus, validated against the book), Copy result now includes certified and evaluated blocks, overlays for certified and evaluated step responses.">changelog</span>
+  <h1>SDDCS Tuner</h1><span class="ver">v0.27</span><span class="ver" style="margin-left:8px;opacity:.7" title="v0.27 (2026-11-25): settling time is now the time of the last sample outside the band (one sampling interval earlier than v0.26, matching the papers); Evaluate accepts a discrete factored controller with zeros placed exactly on the plant poles; ansatz zero offset scaled by (1 - pole). v0.26 (2026-09-11): MIGO solver now rejects tangency roots whose loop encircles -1 (Nyquist winding check); results cleared when plant or spec changes; MIGO output and 6-digit C(z) coefficients in Copy result. v0.25 (2026-09-11): batch P2 denominator corrected to 0.5 1.5 1. v0.24 (2026-09-11): ansatz cancellation zero gets a +/-6% free offset; certify can be seeded from the last certified point (chained shrinking); batch mode reproduces Table 1 (P1, P2, P3 at orders 1 and 2). v0.26 (2026-09-11): Certify stage (global grid, cancellation ansatz, seeded), exact MIGO solver (Astrom-Hagglund lower-vertex locus, validated against the book), Copy result now includes certified and evaluated blocks, overlays for certified and evaluated step responses.">changelog</span>
   <span class="sub">a recurrent linear unit trained by pathwise gradient through the exact discrete closed loop</span>
 </header>
 <main>
@@ -70,7 +70,7 @@ progress{width:100%;height:6px;accent-color:var(--accent);margin-top:6px}
     <div class="row"><label for="pnum">Numerator (space-separated)</label><input class="wide" type="text" id="pnum" value="1"></div>
     <div class="row"><label for="pden">Denominator (space-separated)</label><input class="wide" type="text" id="pden" value="2 1"></div>
     <div class="row"><label for="pdel">Dead time L</label><input type="number" id="pdel" value="1" step="0.1" min="0"></div>
-    <div class="note">Descending powers of s, strictly proper. Default: FOTD, T/L = 2, the certified benchmark (PI optimum Ts = 4.86L, order-2 wall 3.2L).</div>
+    <div class="note">Descending powers of s, strictly proper. Default: FOTD, T/L = 2, the certified benchmark at &Delta;t = 0.025 (PI optimum Ts = 4.875L, order-2 wall 3.125L). Ts is the time of the last sample outside the band.</div>
   </div>
 
   <div class="panel">
@@ -143,10 +143,11 @@ progress{width:100%;height:6px;accent-color:var(--accent);margin-top:6px}
       <select id="evMode">
         <option value="pidf" selected>continuous PIDF: Kp Ki Kd N (or Kp Ki for PI)</option>
         <option value="vel">velocity th: Kp Ki [Kd [Kdd]] z1c z2 [z3]</option>
+        <option value="zpk">discrete factored: kI ; zeros (P = plant poles) ; poles besides z = 1</option>
       </select></div>
     <div class="row"><label for="evGains">Gains (space-separated)</label><input class="wide" type="text" id="evGains" value=""></div>
     <div class="btns"><button id="btnEval">Evaluate</button></div>
-    <div style="margin-top:10px" class="gains" id="evOut">paste pidtune or paper gains, then Evaluate; same instrument as training (ZOH, current &Delta;t, band, load IAE)</div>
+    <div style="margin-top:10px" class="gains" id="evOut">paste pidtune or paper gains, then Evaluate; same instrument as training (ZOH, current &Delta;t, band, load IAE). Discrete factored example (FOTD wall): 0.598804 ; P 0.932900 ; 0.694214</div>
     <h2 style="margin-top:14px">Exact MIGO (&Aring;str&ouml;m&ndash;H&auml;gglund)</h2>
     <div class="row"><label for="mgType">Controller</label>
       <select id="mgType"><option value="PI" selected>PI</option><option value="PID">PID (ideal derivative)</option></select></div>
@@ -332,7 +333,7 @@ function hardMetrics(ro,cfg){
   const PO=ymax-1;
   let lastOut=-1;for(let k=0;k<=N;k++)if(Math.abs(y[k]-1)>cfg.band)lastOut=k;
   const settled=lastOut<N;
-  const Ts=lastOut<0?0:(settled?(lastOut+1)*dt:N*dt);
+  const Ts=lastOut<0?0:(settled?lastOut*dt:N*dt); // v0.27: time of the last sample outside the band
   let TV0=0;for(let k=0;k<N;k++){const d=y[k]-y[k+1];if(d>0)TV0+=d;}
   let TVu=0;for(let k=0;k<N;k++)TVu+=Math.abs(ro.u[k+1]-ro.u[k]);
   const feasible=settled&&(cfg.mono?(TV0<=cfg.tolTV&&PO<=cfg.tolTV):PO<=cfg.POmax+1e-6);
@@ -534,7 +535,7 @@ function cPlantZeros(){ // discrete plant poles to cancel (order 2 ansatz)
   return null;
 }
 function cStart(){
-  const o=W.order,pin=W.pin,full={K:[-2,1.8],zz:[-3.3,0.29],zp:[-3.3,0.29],a:[-3.3,0.29],b:[-3.3,0.29],z1:[-3.3,0.29],z2:[-2,0.29],dz:[-0.06,0.06]}; // K: log10 K; poles/zeros: z = 1 - 10^u (dense near 1)
+  const o=W.order,pin=W.pin,full={K:[-2,1.8],zz:[-3.3,0.29],zp:[-3.3,0.29],a:[-3.3,0.29],b:[-3.3,0.29],z1:[-3.3,0.29],z2:[-2,0.29],dz:[-0.1,0.1]}; // v0.27: dz is a relative offset of (1 - zero) // K: log10 K; poles/zeros: z = 1 - 10^u (dense near 1)
   W.fixed=null;W.pair=null;
   if(W.mode==='global'){
     W.dims=pin?['K','zz']:['K','zz','zp'];
@@ -584,7 +585,7 @@ function cPoint(idx){
   const K=Math.pow(10,full.K);
   if(W.order===1)return [K,Z(full.zz),W.pin?1:Z(full.zp)];
   if(W.pair)return [K,W.pair,null,W.pin?1:Z(full.z1),Z(full.z2)]; // complex pair: numerator K(1 - s1 z^-1 - s2 z^-2) handled in cTh
-  return [K,W.fixed!==null?W.fixed*(1+(full.dz||0)):Z(full.a),Z(full.b),W.pin?1:Z(full.z1),Z(full.z2)];
+  return [K,W.fixed!==null?(1-(1-W.fixed)*(1+(full.dz||0))):Z(full.a),Z(full.b),W.pin?1:Z(full.z1),Z(full.z2)];
 }
 function cChunk(){
   if(!W.running)return;
@@ -607,7 +608,7 @@ function cChunk(){
     const p=cPoint(W.idx);W.idx++;W.evals++;
     const th=cTh(p);const hm=wCaseHm(th);
     if(hm.caseFeasible){
-      const rec={obj:hm.obj,Ts:hm.Ts,th:th,met:hm,order:W.order,dt:W.dt,p:W.dims.map(d=>{const v=W.order===1?{K:Math.log10(p[0]),zz:U(p[1]),zp:U(p[2])}:{K:Math.log10(p[0]),a:Array.isArray(p[1])?0:U(p[1]),dz:(W.fixed!==null&&!Array.isArray(p[1]))?(p[1]/W.fixed-1):0,b:p[2]===null?0:U(p[2]),z1:U(p[3]),z2:U(p[4])};return v[d];})};
+      const rec={obj:hm.obj,Ts:hm.Ts,th:th,met:hm,order:W.order,dt:W.dt,p:W.dims.map(d=>{const v=W.order===1?{K:Math.log10(p[0]),zz:U(p[1]),zp:U(p[2])}:{K:Math.log10(p[0]),a:Array.isArray(p[1])?0:U(p[1]),dz:(W.fixed!==null&&!Array.isArray(p[1]))?((1-p[1])/(1-W.fixed)-1):0,b:p[2]===null?0:U(p[2]),z1:U(p[3]),z2:U(p[4])};return v[d];})};
       if(!W.cbest||rec.obj<W.cbest.obj)W.cbest=rec;
       if(W.stage===0)cAddCand(rec);
       else if(!W.candBest||rec.obj<W.candBest.obj)W.candBest=rec;
@@ -1075,13 +1076,57 @@ for(const id of ['pnum','pden','pdel','dt','Th','band','pomax','msmax','pmtgt','
     }else{readAll();draw();}
   });
 }
+/* v0.27: discrete factored controller  C(z) = g prod(1 - q_i z^-1) / ((1 - z^-1) prod(1 - p_i z^-1)),
+   g fixed by kI dt = g prod(1 - q_i)/prod(1 - p_i). The token P among the zeros places zeros exactly on
+   all discrete plant poles (characteristic polynomial of the ZOH state matrix, no root finding). */
+function plantPolePoly(pl){ // coefficients of prod(1 - lambda_i z^-1), Faddeev-LeVerrier on Ad
+  const n=pl.n,A=pl.Ad;const c=[1];
+  let M=[];for(let i=0;i<n;i++){M.push(new Float64Array(n));M[i][i]=1;}
+  for(let k=1;k<=n;k++){
+    const AM=[];for(let i=0;i<n;i++){AM.push(new Float64Array(n));for(let j=0;j<n;j++){let s=0;for(let l=0;l<n;l++)s+=A[i][l]*M[l][j];AM[i][j]=s;}}
+    let tr=0;for(let i=0;i<n;i++)tr+=AM[i][i];
+    const ck=-tr/k;c.push(ck);
+    M=AM;for(let i=0;i<n;i++)M[i][i]+=ck;
+  }
+  return c;
+}
+function polyMul(a,b){const r=new Array(a.length+b.length-1).fill(0);for(let i=0;i<a.length;i++)for(let j=0;j<b.length;j++)r[i+j]+=a[i]*b[j];return r;}
+function zpkToTh(str,pl,dt,Kdc){
+  const parts=str.split(';').map(x=>x.trim());
+  if(parts.length<2||parts.length>3)return {err:'Discrete factored mode expects: kI ; zeros ; poles   (use P among the zeros for the plant poles; poles may be empty).'};
+  const kI=Number(parts[0]);if(!isFinite(kI))return {err:'kI unreadable.'};
+  let num=[1],usedP=false;
+  for(const t of parts[1].split(/[,\s]+/).filter(x=>x.length)){
+    if(t==='P'||t==='p'){if(usedP)return {err:'Use P once.'};usedP=true;num=polyMul(num,plantPolePoly(pl));}
+    else{const q=Number(t);if(!isFinite(q))return {err:'Zero unreadable: '+t};num=polyMul(num,[1,-q]);}
+  }
+  const poles=(parts[2]||'').split(/[,\s]+/).filter(x=>x.length).map(Number);
+  if(poles.some(p=>!isFinite(p)))return {err:'Pole unreadable.'};
+  const order=Math.max(num.length-1,poles.length+1);
+  if(order>3)return {err:'Order '+order+' exceeds 3.'};
+  if(order<1)return {err:'Empty controller.'};
+  let dc=1;for(const p of poles)dc*=(1-p);
+  const n1=num.reduce((a,b)=>a+b,0);if(Math.abs(n1)<1e-14)return {err:'A zero at z = 1 cancels the integrator.'};
+  const g=kI*dt*dc/n1*Kdc;
+  const w=[0,0,0,0];for(let i=0;i<num.length;i++)w[i]=g*num[i];
+  const Ki=g*n1/dt; // exact: sum of taps over dt
+  let th;
+  if(order===1){th=[-w[1],Ki,0];}
+  else if(order===2){const Kd=w[2]*dt,Kp=-w[1]-2*w[2];th=[Kp,Ki,Kd,0,poles[0]||0];}
+  else{const B=-w[3],A=w[2]-3*B,Kp=-w[1]-2*A-3*B;th=[Kp,Ki,A*dt,B*dt*dt,0,poles[0]||0,poles[1]||0];}
+  return {th,order,note:'discrete factored, kI = '+kI+(usedP?', zeros on the exact discrete plant poles':'')};
+}
 document.getElementById('btnEval').addEventListener('click',function(){
   const pc=readAll(); if(!pc)return;
   const out=document.getElementById('evOut');
   const toks=val('evGains').split(/[,\s]+/).map(Number).filter(x=>!isNaN(x));
   const mode=val('evMode');
   let th=null, order=0, note='';
-  if(mode==='pidf'){
+  if(mode==='zpk'){
+    const r=zpkToTh(val('evGains'),S.plant,S.dtv,S.Kdc||1);
+    if(r.err){out.textContent=r.err;return;}
+    th=r.th;order=r.order;note=r.note;
+  } else if(mode==='pidf'){
     const dt=S.dtv;
     if(toks.length===2){order=1; th=[toks[0]*S.Kdc,toks[1]*S.Kdc,0]; note='PI, backward-Euler exact';}
     else if(toks.length===4){
@@ -1110,7 +1155,7 @@ document.getElementById('btnEval').addEventListener('click',function(){
   out.textContent=txt;S.evTxt=txt;document.getElementById('btnCopy').disabled=false;draw();
 });
 (function boot(){readAll();draw();
-  setStatus('Ready. Default: FOTD T/L = 2, order 2, monotone; expected wall Ts \u2248 3.2L.');})();
+  setStatus('Ready. Default: FOTD T/L = 2, order 2, monotone; expected wall Ts \u2248 3.1L.');})();
 </script>
 </body>
 </html>
